@@ -37,9 +37,50 @@ export function enqueueRequest(task) {
   return result;
 }
 
-async function readJson(response) {
-  const data = await response.json();
-  return data;
+/**
+ * Build a short, plain-text error. Never returns response HTML or markup.
+ */
+export function describeApiFailure(status, contentType, bodyText) {
+  const type = String(contentType || "").toLowerCase();
+  const raw = String(bodyText || "");
+  if (type.includes("application/json") && raw) {
+    try {
+      const body = JSON.parse(raw);
+      const msg = body && (body.message || body.reason || body.error);
+      if (typeof msg === "string" && msg.trim() && !/[<>]/.test(msg)) {
+        return msg.trim();
+      }
+    } catch {
+      /* ignore invalid JSON */
+    }
+  }
+  if (status === 403) {
+    return "e621 denied the request (403). Wait a moment and try again.";
+  }
+  if (status === 429 || status === 503) {
+    return "e621 is rate-limiting requests. Wait a moment and try again.";
+  }
+  if (status) {
+    return `e621 request failed (${status}). Wait a moment and try again.`;
+  }
+  return "e621 returned an unexpected response. Wait a moment and try again.";
+}
+
+async function parseResponse(response) {
+  const type = response.headers.get("content-type") || "";
+  const text = await response.text();
+  if (!response.ok || !type.toLowerCase().includes("application/json")) {
+    const error = new Error(describeApiFailure(response.status, type, text));
+    error.status = response.status;
+    throw error;
+  }
+  try {
+    return text ? JSON.parse(text) : [];
+  } catch {
+    const error = new Error(describeApiFailure(response.status, type, text));
+    error.status = response.status;
+    throw error;
+  }
 }
 
 export function fetchJson(path, params = {}, { signal } = {}) {
@@ -57,19 +98,7 @@ export function fetchJson(path, params = {}, { signal } = {}) {
         headers: { Accept: "application/json" },
       });
     }
-    if (!response.ok) {
-      let message = `e621 request failed (${response.status})`;
-      try {
-        const body = await response.json();
-        message = body.message || body.reason || message;
-      } catch {
-        /* ignore parse errors */
-      }
-      const error = new Error(message);
-      error.status = response.status;
-      throw error;
-    }
-    return readJson(response);
+    return parseResponse(response);
   });
 }
 

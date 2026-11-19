@@ -64,6 +64,7 @@ const els = {
   viewerOpen: document.getElementById("viewer-open"),
   viewerMeta: document.getElementById("viewer-meta"),
   viewerAlts: document.getElementById("viewer-alts"),
+  retry: document.getElementById("retry"),
 };
 
 const state = {
@@ -95,9 +96,10 @@ function currentQuery() {
   });
 }
 
-function setStatus(message, kind = "") {
+function setStatus(message, kind = "", { retry = false } = {}) {
   els.status.textContent = message || "";
   els.status.dataset.kind = kind;
+  if (els.retry) els.retry.hidden = !retry;
 }
 
 function showStorageBanner() {
@@ -333,7 +335,7 @@ async function loadPage({ page, append }) {
     }
   } catch (error) {
     if (error && error.name === "AbortError") return;
-    setStatus(error.message || "Search failed.", "error");
+    setStatus(error.message || "Search failed.", "error", { retry: true });
   } finally {
     state.loading = false;
     els.prev.disabled = state.page <= 1 || state.loading;
@@ -591,6 +593,12 @@ function bindEvents() {
     setStatus("Blacklist saved for this session" + (isStoragePersistent() ? " and browser storage." : ". Storage is blocked, so it will not persist."));
     if (state.posts.length) searchFromStart();
   });
+
+  if (els.retry) {
+    els.retry.addEventListener("click", () => {
+      searchFromStart();
+    });
+  }
 
   els.prev.addEventListener("click", () => {
     if (state.page > 1) loadPage({ page: state.page - 1, append: false });

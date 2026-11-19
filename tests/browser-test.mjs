@@ -132,6 +132,88 @@ try {
     log("PASS confirmation reveals the app and does not auto-search");
   });
 
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({
+        width: 360,
+        height: 740,
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+      });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+      await page.evaluateOnNewDocument(() => {
+        const boom = () => {
+          throw new Error("storage blocked");
+        };
+        const fake = {
+          getItem: boom,
+          setItem: boom,
+          removeItem: boom,
+          clear: boom,
+          key: boom,
+          get length() {
+            throw new Error("storage blocked");
+          },
+        };
+        Object.defineProperty(window, "localStorage", { get: () => fake });
+      });
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "networkidle0" });
+      const before = await page.evaluate(() => {
+        const declined = document.getElementById("age-declined");
+        const cs = getComputedStyle(declined);
+        return {
+          scrollH: document.documentElement.scrollHeight,
+          innerH: window.innerHeight,
+          declinedDisplay: cs.display,
+          declinedHeight: declined.getBoundingClientRect().height,
+          visibleAccess: /access\s+(denied|declined)/i.test(document.body.innerText),
+        };
+      });
+      assert.equal(before.declinedDisplay, "none", "declined overlay must not layout while hidden");
+      assert.equal(before.declinedHeight, 0);
+      assert.ok(before.scrollH <= before.innerH + 8, `startup page too tall: ${before.scrollH}`);
+      assert.equal(before.visibleAccess, false);
+      await page.click("#age-confirm");
+      await page.waitForSelector("#app:not([hidden])");
+      const after = await page.evaluate(() => {
+        const gate = document.getElementById("age-gate");
+        const declined = document.getElementById("age-declined");
+        return {
+          scrollH: document.documentElement.scrollHeight,
+          innerH: window.innerHeight,
+          gateDisplay: getComputedStyle(gate).display,
+          declinedDisplay: getComputedStyle(declined).display,
+          gateHeight: gate.getBoundingClientRect().height,
+          declinedHeight: declined.getBoundingClientRect().height,
+          visibleAccess: /access\s+(denied|declined)/i.test(document.body.innerText),
+          appHidden: document.getElementById("app").hidden,
+        };
+      });
+      assert.equal(after.gateDisplay, "none");
+      assert.equal(after.declinedDisplay, "none");
+      assert.equal(after.gateHeight, 0);
+      assert.equal(after.declinedHeight, 0);
+      assert.equal(after.appHidden, false);
+      assert.equal(after.visibleAccess, false);
+      assert.ok(
+        after.scrollH < after.innerH * 2,
+        `page stayed too tall after confirm: ${after.scrollH}`
+      );
+      const posts = apiCalls.filter((url) => url.includes("/posts.json"));
+      assert.equal(posts.length, 0, "must not auto-search after confirm");
+      log("PASS mobile gate hides cleanly and does not leave a tall Access declined screen");
+    }
+  );
+
+
   await withPage(browser, base, null, async (page, { apiCalls }) => {
     await page.goto(base + "/", { waitUntil: "domcontentloaded" });
     await confirmAndUseSafe(page);

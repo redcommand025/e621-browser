@@ -29,7 +29,7 @@
 
     <section id="age-declined" class="overlay-screen" hidden>
       <div class="panel">
-        <h1>Access declined</h1>
+        <h1>You chose to exit</h1>
         <p>This site is only available to people who are 18 or older.</p>
       </div>
     </section>
@@ -95,7 +95,10 @@
         </div>
 
         <div id="storage-banner" class="banner" hidden></div>
-        <p id="status" class="status" aria-live="polite"></p>
+        <div class="status-row">
+          <p id="status" class="status" aria-live="polite"></p>
+          <button id="retry" type="button" class="secondary" hidden>Retry</button>
+        </div>
       </header>
 
       <main>
