@@ -11,12 +11,15 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Rating filter (defaults to all ratings) and sorting (`order:` metatags)
 - Responsive, lazy-loaded thumbnail grid
 - Viewer for stills and webm/mp4 videos, with sample/original and alternate video versions
+- Favorites: look up public favorites with an e621 username (`fav:username`). Optional sign-in with a username and API key for private favorites. Keys stay in memory unless you opt in to remember them on this device
+- Pools: search pools, then open one to browse its posts in pool order
+- Popular: today, this week, or this month, with a date to move back and forward
 - Optional personal tag blacklist
-- Works when `localStorage` is blocked (confirmation and blacklist then last only for the tab)
+- Works when `localStorage` is blocked (confirmation, blacklist, and remembered keys then last only for the tab)
 
 ## Always-on exclusions
 
-Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every query and also filters the returned tag lists in the browser. There is no setting or URL parameter to turn this off.
+Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden, including in favorites, pools, popular, and pool covers. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every tag query and also filters returned tag lists in the browser. Pools whose names include those terms are not listed. There is no setting or URL parameter to turn this off.
 
 ## Storage and backups
 

@@ -50,7 +50,9 @@ function startServer() {
 function isApiRequest(url) {
   return (
     url.startsWith("https://e621.net/posts.json") ||
-    url.startsWith("https://e621.net/tags/")
+    url.startsWith("https://e621.net/tags/") ||
+    url.startsWith("https://e621.net/pools.json") ||
+    url.startsWith("https://e621.net/popular.json")
   );
 }
 
@@ -391,6 +393,91 @@ try {
       assert.ok(apiCalls.length >= 1);
     }
   );
+
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      const afterConfirm = await page.evaluate(() => ({
+        scrollH: document.documentElement.scrollHeight,
+        innerH: window.innerHeight,
+        gateDisplay: getComputedStyle(document.getElementById("age-gate")).display,
+        declinedDisplay: getComputedStyle(document.getElementById("age-declined")).display,
+      }));
+      assert.equal(afterConfirm.gateDisplay, "none");
+      assert.equal(afterConfirm.declinedDisplay, "none");
+      assert.ok(afterConfirm.scrollH < afterConfirm.innerH * 2, `layout too tall: ${afterConfirm.scrollH}`);
+
+      await page.click('[data-view="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      await page.$eval("#fav-user", (el) => { el.value = ""; });
+      await page.type("#fav-user", "bitWolfy");
+      await page.click("#fav-load");
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const favCalls = apiCalls.filter((url) => url.includes("/posts.json"));
+      assert.ok(favCalls.length >= 1, "expected a favorites request");
+      const favTags = new URL(favCalls.at(-1)).searchParams.get("tags") || "";
+      assert.match(favTags, /fav:bitWolfy/i);
+      assert.match(favTags, /(^|\s)rating:s(\s|$)/);
+      assert.match(favTags, /(^|\s)-young(\s|$)/);
+      const favBadges = await page.$$eval("#grid .badge", (els) => els.map((el) => el.textContent));
+      assert.ok(favBadges.length > 0);
+      assert.ok(favBadges.every((b) => b === "S"), `non-safe favorite visible: ${favBadges}`);
+      log(`PASS public favorites loaded for bitWolfy (${favBadges.length} safe thumbs)`);
+
+      await page.click('[data-view="pools"]');
+      await page.waitForSelector("#pools-panel:not([hidden])");
+      await page.$eval("#pool-search", (el) => { el.value = ""; });
+      await page.type("#pool-search", "Safety_Plan");
+      await page.click("#pool-load");
+      await page.waitForFunction(() => document.querySelectorAll("#pool-list .pool-item").length > 0, { timeout: 20000 });
+      const poolNames = await page.$$eval("#pool-list .pool-item strong", (els) => els.map((el) => el.textContent.toLowerCase()));
+      for (const name of poolNames) {
+        for (const tag of ["young", "loli", "shota", "cub"]) {
+          assert.equal(name.split(/\s+/).includes(tag), false, `blocked pool listed: ${name}`);
+        }
+      }
+      await page.click("#pool-list .pool-item");
+      await page.waitForFunction(
+        () => document.querySelectorAll("#grid .thumb").length > 0 || /No viewable posts/i.test(document.getElementById("status").textContent),
+        { timeout: 20000 }
+      );
+      const poolCalls = apiCalls.filter((url) => url.includes("/pools.json"));
+      assert.ok(poolCalls.length >= 1, "expected a pools request");
+      if (await page.$("#grid .thumb")) {
+        const poolBadges = await page.$$eval("#grid .badge", (els) => els.map((el) => el.textContent));
+        assert.ok(poolBadges.every((b) => b === "S"));
+      }
+      log(`PASS pools list and open (${poolNames.length} listed)`);
+
+      await page.click('[data-view="popular"]');
+      await page.waitForSelector("#popular-panel:not([hidden])");
+      const popularBefore = apiCalls.filter((url) => url.includes("/popular.json")).length;
+      await page.click('#popular-panel [data-scale="day"]');
+      await page.waitForFunction(
+        () => document.querySelectorAll("#grid .thumb").length > 0 || /No viewable popular posts/i.test(document.getElementById("status").textContent),
+        { timeout: 20000 }
+      );
+      const popularCalls = apiCalls.filter((url) => url.includes("/popular.json"));
+      assert.ok(popularCalls.length > popularBefore, "expected a popular request");
+      const popularUrl = new URL(popularCalls.at(-1));
+      assert.equal(popularUrl.searchParams.get("scale"), "day");
+      assert.ok(!popularUrl.searchParams.get("tags"));
+      const popularBadges = await page.$$eval("#grid .badge", (els) => els.map((el) => el.textContent));
+      assert.ok(popularBadges.every((b) => b === "S"), `non-safe popular visible: ${popularBadges}`);
+      log(`PASS popular day view (${popularBadges.length} safe thumbs after client filter)`);
+    }
+  );
+
 
   log("All browser tests passed.");
 } catch (error) {

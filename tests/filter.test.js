@@ -4,11 +4,16 @@ import {
   BLOCKED_TAGS,
   FORCED_EXCLUSIONS,
   MAX_SEARCH_TAGS,
+  applyClientFilters,
   buildSearchQuery,
   collectTags,
+  filterPools,
   filterPosts,
   filterSuggestions,
   isBlockedTag,
+  isValidUsername,
+  nameContainsBlockedTerm,
+  sanitizeUsername,
   shouldExcludePost,
 } from "../js/filter.js";
 
@@ -146,4 +151,58 @@ test("there is no query flag that disables the hard exclusion", () => {
   const tags = sneaky.tags.split(/\s+/);
   assert.equal(tags.includes("-young"), true);
   assert.equal(tags.includes("young"), false);
+});
+
+
+test("filterPools hides pools whose names contain blocked terms", () => {
+  const pools = [
+    { id: 1, name: "Forest_Walk", post_ids: [10] },
+    { id: 2, name: "young_adventures", post_ids: [11] },
+    { id: 3, name: "the_loli_collection", post_ids: [12] },
+    { id: 4, name: "Shota_Sketches", post_ids: [13] },
+    { id: 5, name: "winter_cub_days", post_ids: [14] },
+    { id: 6, name: "Canine_Study", post_ids: [15] },
+  ];
+  assert.deepEqual(
+    filterPools(pools).map((pool) => pool.id),
+    [1, 6]
+  );
+  assert.equal(nameContainsBlockedTerm("young_adventures"), true);
+  assert.equal(nameContainsBlockedTerm("younger_style"), false);
+});
+
+test("popular and pool posts are excluded client-side even without a tag query", () => {
+  function item(id, tags, rating = "s") {
+    return {
+      id,
+      rating,
+      flags: { deleted: false },
+      files: { original: { url: "https://example.invalid/file.jpg" } },
+      tags,
+    };
+  }
+  const posts = [
+    item(1, ["canine", "fox"], "s"),
+    item(2, ["young"], "s"),
+    item(3, { general: ["canine"], character: ["loli"] }, "s"),
+    item(4, ["canine"], "e"),
+    {
+      id: 5,
+      rating: "s",
+      flags: { deleted: false },
+      files: { original: { url: null } },
+      tags: ["canine"],
+    },
+  ];
+  const filtered = applyClientFilters(posts, { rating: "s", blacklist: ["gore"] });
+  assert.deepEqual(filtered.map((post) => post.id), [1]);
+  assert.equal(applyClientFilters(posts, { rating: "all" }).some((post) => post.id === 4), true);
+  assert.equal(applyClientFilters(posts, { rating: "all" }).some((post) => post.id === 2), false);
+});
+
+test("usernames are sanitized before fav: queries", () => {
+  assert.equal(sanitizeUsername(" fav:BitWolfy "), "BitWolfy");
+  assert.equal(isValidUsername("bitWolfy"), true);
+  assert.equal(isValidUsername("bad user"), false);
+  assert.equal(isValidUsername("fav:foo young"), false);
 });

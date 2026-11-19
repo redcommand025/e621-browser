@@ -7,6 +7,37 @@ export const MIN_REQUEST_INTERVAL_MS = 800;
 
 let chain = Promise.resolve();
 let lastRequestAt = 0;
+let basicAuth = null;
+
+export function setBasicAuth(username, apiKey) {
+  const user = String(username || "").trim();
+  const key = String(apiKey || "");
+  basicAuth = user && key ? { username: user, apiKey: key } : null;
+}
+
+export function clearBasicAuth() {
+  basicAuth = null;
+}
+
+export function hasBasicAuth() {
+  return Boolean(basicAuth && basicAuth.username && basicAuth.apiKey);
+}
+
+export function basicAuthUsername() {
+  return basicAuth && basicAuth.username ? basicAuth.username : "";
+}
+
+function requestHeaders() {
+  const headers = { Accept: "application/json" };
+  if (hasBasicAuth()) {
+    try {
+      headers.Authorization = `Basic ${btoa(`${basicAuth.username}:${basicAuth.apiKey}`)}`;
+    } catch {
+      /* ignore encoding errors; the request will proceed unauthenticated */
+    }
+  }
+  return headers;
+}
 
 export function buildApiUrl(path, params = {}) {
   const url = new URL(path, API_ORIGIN);
@@ -54,6 +85,9 @@ export function describeApiFailure(status, contentType, bodyText) {
       /* ignore invalid JSON */
     }
   }
+  if (status === 401) {
+    return "Sign-in failed. Check the username and API key.";
+  }
   if (status === 403) {
     return "e621 denied the request (403). Wait a moment and try again.";
   }
@@ -86,17 +120,12 @@ async function parseResponse(response) {
 export function fetchJson(path, params = {}, { signal } = {}) {
   return enqueueRequest(async () => {
     const url = buildApiUrl(path, params);
-    let response = await fetch(url, {
-      signal,
-      headers: { Accept: "application/json" },
-    });
+    const headers = requestHeaders();
+    let response = await fetch(url, { signal, headers });
     if (response.status === 503) {
       await wait(1500);
       lastRequestAt = Date.now();
-      response = await fetch(url, {
-        signal,
-        headers: { Accept: "application/json" },
-      });
+      response = await fetch(url, { signal, headers });
     }
     return parseResponse(response);
   });
@@ -108,6 +137,44 @@ export async function fetchPosts({ tags, page = 1, limit = PAGE_LIMIT, signal } 
     { tags, page: String(page), limit: String(limit) },
     { signal }
   );
+  return normalizePostsResponse(data);
+}
+
+export async function fetchPostsByIds(ids, { extraTags = "", signal } = {}) {
+  const list = (ids || []).map((id) => Number(id)).filter((id) => Number.isFinite(id));
+  if (!list.length) return [];
+  const tags = [`id:${list.join(",")}`, extraTags].filter(Boolean).join(" ");
+  const data = await fetchPosts({
+    tags,
+    page: 1,
+    limit: Math.min(Math.max(list.length, 1), 320),
+    signal,
+  });
+  const byId = new Map(data.map((post) => [post.id, post]));
+  return list.map((id) => byId.get(id)).filter(Boolean);
+}
+
+export async function fetchPools({
+  name = "",
+  order = "updated_at",
+  page = 1,
+  limit = PAGE_LIMIT,
+  signal,
+} = {}) {
+  const params = {
+    limit: String(limit),
+    page: String(page),
+    "search[order]": order || "updated_at",
+  };
+  if (name) params["search[name_matches]"] = name;
+  const data = await fetchJson("/pools.json", params, { signal });
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchPopular({ scale = "day", date = "", signal } = {}) {
+  const params = { scale: scale || "day" };
+  if (date) params.date = date;
+  const data = await fetchJson("/popular.json", params, { signal });
   return normalizePostsResponse(data);
 }
 

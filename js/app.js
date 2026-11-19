@@ -1,31 +1,46 @@
 import {
   buildSearchQuery,
+  applyClientFilters,
+  filterPools,
   filterPosts,
   filterSuggestions,
   isBlockedTag,
+  isValidUsername,
+  sanitizeUsername,
   tokenize,
 } from "./filter.js";
 import {
   getItem,
   setItem,
+  removeItem,
   isStoragePersistent,
 } from "./storage.js";
 import {
   PAGE_LIMIT,
+  basicAuthUsername,
+  clearBasicAuth,
   fetchAutocomplete,
+  fetchPools,
+  fetchPopular,
   fetchPosts,
+  fetchPostsByIds,
   formatCount,
+  hasBasicAuth,
   isVideoPost,
   originalUrl,
   postPageUrl,
   previewUrl,
   sampleImageUrl,
+  setBasicAuth,
   videoSources,
 } from "./api.js";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
 const BLACKLIST_KEY = "e621-browser:blacklist";
+const FAV_USER_KEY = "e621-browser:fav-user";
+const AUTH_USER_KEY = "e621-browser:auth-user";
+const AUTH_KEY_KEY = "e621-browser:auth-key";
 const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
 const MAX_APPENDED_PAGES = 5;
@@ -65,6 +80,28 @@ const els = {
   viewerMeta: document.getElementById("viewer-meta"),
   viewerAlts: document.getElementById("viewer-alts"),
   retry: document.getElementById("retry"),
+  viewNav: document.getElementById("view-nav"),
+  favoritesPanel: document.getElementById("favorites-panel"),
+  favUser: document.getElementById("fav-user"),
+  favLoad: document.getElementById("fav-load"),
+  authUser: document.getElementById("auth-user"),
+  authKey: document.getElementById("auth-key"),
+  authRemember: document.getElementById("auth-remember"),
+  authRememberNote: document.getElementById("auth-remember-note"),
+  authSave: document.getElementById("auth-save"),
+  authClear: document.getElementById("auth-clear"),
+  authStatus: document.getElementById("auth-status"),
+  poolsPanel: document.getElementById("pools-panel"),
+  poolSearch: document.getElementById("pool-search"),
+  poolOrder: document.getElementById("pool-order"),
+  poolNav: document.getElementById("pool-nav"),
+  poolBack: document.getElementById("pool-back"),
+  poolTitle: document.getElementById("pool-title"),
+  poolList: document.getElementById("pool-list"),
+  popularPanel: document.getElementById("popular-panel"),
+  popularDate: document.getElementById("popular-date"),
+  popularPrev: document.getElementById("popular-prev"),
+  popularNext: document.getElementById("popular-next"),
 };
 
 const state = {
@@ -81,6 +118,11 @@ const state = {
   suggestAbort: null,
   searchAbort: null,
   suggestSeq: 0,
+  view: "search",
+  activePool: null,
+  poolIds: [],
+  popularScale: "day",
+  popularAll: [],
 };
 
 function blacklistTags() {
@@ -94,6 +136,44 @@ function currentQuery() {
     order: els.sort.value,
     blacklist: blacklistTags(),
   });
+}
+
+function clientFilter(posts) {
+  return applyClientFilters(posts, {
+    rating: els.rating.value,
+    blacklist: blacklistTags(),
+  });
+}
+
+function exclusionTagString() {
+  return buildSearchQuery({
+    userQuery: "",
+    rating: els.rating.value,
+    order: "",
+    blacklist: blacklistTags(),
+  }).tags;
+}
+
+function todayISO() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+function clampDate(iso) {
+  const today = todayISO();
+  return iso > today ? today : iso;
+}
+
+function shiftDate(iso, scale, direction) {
+  const [year, month, day] = (iso || todayISO()).split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (scale === "week") date.setDate(date.getDate() + 7 * direction);
+  else if (scale === "month") date.setMonth(date.getMonth() + direction);
+  else date.setDate(date.getDate() + direction);
+  const next = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  return clampDate(next);
 }
 
 function setStatus(message, kind = "", { retry = false } = {}) {
@@ -308,7 +388,7 @@ async function loadPage({ page, append }) {
   els.more.disabled = true;
   setStatus(append ? "Loading more…" : "Loading…");
   try {
-    const posts = filterPosts(
+    const posts = clientFilter(
       await fetchPosts({
         tags: built.tags,
         page,
@@ -534,9 +614,362 @@ function bindInfiniteScroll() {
     if (!entries.some((entry) => entry.isIntersecting)) return;
     if (state.loading || !state.hasMore || state.appended >= MAX_APPENDED_PAGES) return;
     if (!state.posts.length) return;
-    loadPage({ page: state.page + 1, append: true });
+    reloadCurrent({ page: state.page + 1, append: true });
   });
   observer.observe(els.sentinel);
+}
+
+
+function abortSearch() {
+  if (state.searchAbort) state.searchAbort.abort();
+  const abort = new AbortController();
+  state.searchAbort = abort;
+  return abort;
+}
+
+function beginLoad(message) {
+  state.loading = true;
+  els.prev.disabled = true;
+  els.next.disabled = true;
+  els.more.disabled = true;
+  setStatus(message || "Loading…");
+}
+
+function finishLoad() {
+  state.loading = false;
+  els.prev.disabled = state.page <= 1 || state.loading;
+  els.next.disabled = !state.hasMore || state.loading;
+  els.more.disabled =
+    !state.hasMore || state.loading || state.appended >= MAX_APPENDED_PAGES;
+}
+
+function showPostGrid() {
+  if (els.poolList) els.poolList.hidden = true;
+  els.grid.hidden = false;
+}
+
+function assignPosts(posts, { page, append, pageSize = PAGE_LIMIT }) {
+  state.page = page;
+  state.hasMore = posts.length >= pageSize && page < MAX_PAGE;
+  if (append) {
+    state.posts = state.posts.concat(posts);
+    state.appended += 1;
+  } else {
+    state.posts = posts;
+    state.appended = 0;
+    state.activeIndex = -1;
+  }
+  showPostGrid();
+  renderGrid(!append);
+}
+
+function setView(view) {
+  state.view = view;
+  if (view !== "pools") {
+    state.activePool = null;
+    state.poolIds = [];
+  }
+  hideSuggestions();
+  closeViewer();
+  if (els.viewNav) {
+    for (const button of els.viewNav.querySelectorAll("[data-view]")) {
+      button.setAttribute("aria-selected", button.dataset.view === view ? "true" : "false");
+    }
+  }
+  if (els.form) els.form.hidden = view !== "search";
+  if (els.favoritesPanel) els.favoritesPanel.hidden = view !== "favorites";
+  if (els.poolsPanel) els.poolsPanel.hidden = view !== "pools";
+  if (els.popularPanel) els.popularPanel.hidden = view !== "popular";
+  if (els.poolList) els.poolList.hidden = view !== "pools" || Boolean(state.activePool);
+  if (els.poolNav) els.poolNav.hidden = !(view === "pools" && state.activePool);
+  els.grid.hidden = view === "pools" && !state.activePool;
+  const sortLabel = els.sort && els.sort.closest("label");
+  if (sortLabel) sortLabel.hidden = view === "pools" || view === "popular";
+  if (view !== "pools") {
+    if (els.poolList) els.poolList.innerHTML = "";
+  }
+  state.posts = [];
+  state.popularAll = [];
+  state.page = 1;
+  state.appended = 0;
+  state.hasMore = false;
+  state.activeIndex = -1;
+  els.grid.innerHTML = "";
+  setStatus("");
+}
+
+function updateAuthStatus() {
+  if (!els.authStatus) return;
+  if (hasBasicAuth()) {
+    els.authStatus.textContent = `Signed in as ${basicAuthUsername()}. The API key stays in this tab` + (isStoragePersistent() && els.authRemember.checked ? " and on this device." : " only.");
+  } else {
+    els.authStatus.textContent = "Not signed in. Public favorites still work.";
+  }
+  if (els.authRememberNote) {
+    els.authRememberNote.hidden = isStoragePersistent();
+  }
+  if (els.authRemember && !isStoragePersistent()) {
+    els.authRemember.checked = false;
+    els.authRemember.disabled = true;
+  }
+}
+
+function removeAuthKey() {
+  removeItem(AUTH_KEY_KEY);
+}
+
+function signIn() {
+  const username = sanitizeUsername(els.authUser.value);
+  const apiKey = (els.authKey.value || "").trim();
+  if (!isValidUsername(username) || !apiKey) {
+    setStatus("Enter a username and API key to sign in.", "error");
+    return;
+  }
+  const remember = Boolean(els.authRemember && els.authRemember.checked && isStoragePersistent());
+  setBasicAuth(username, apiKey);
+  setItem(AUTH_USER_KEY, username);
+  if (remember) setItem(AUTH_KEY_KEY, apiKey);
+  else removeAuthKey();
+  els.authKey.value = "";
+  if (els.favUser && !els.favUser.value) els.favUser.value = username;
+  updateAuthStatus();
+  setStatus("Signed in. Private favorites will use this API key.");
+}
+
+function signOut() {
+  clearBasicAuth();
+  removeAuthKey();
+  if (els.authKey) els.authKey.value = "";
+  updateAuthStatus();
+  setStatus("Signed out. The API key was cleared from memory.");
+}
+
+async function loadFavorites({ page, append }) {
+  const username = sanitizeUsername(els.favUser && els.favUser.value);
+  if (!isValidUsername(username)) {
+    setStatus("Enter a valid e621 username to load favorites.", "error");
+    return;
+  }
+  setItem(FAV_USER_KEY, username);
+  const built = buildSearchQuery({
+    userQuery: `fav:${username}`,
+    rating: els.rating.value,
+    order: els.sort.value,
+    blacklist: blacklistTags(),
+  });
+  const abort = abortSearch();
+  beginLoad(append ? "Loading more favorites…" : "Loading favorites…");
+  try {
+    const posts = clientFilter(
+      await fetchPosts({
+        tags: built.tags,
+        page,
+        limit: PAGE_LIMIT,
+        signal: abort.signal,
+      })
+    );
+    assignPosts(posts, { page, append });
+    const warning = built.warning ? ` ${built.warning}` : "";
+    if (!state.posts.length) setStatus(`No favorites found.${warning}`, "warn");
+    else setStatus(`${state.posts.length} favorites loaded for ${username}.${warning}`);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    setStatus(error.message || "Could not load favorites.", "error", { retry: true });
+  } finally {
+    finishLoad();
+  }
+}
+
+async function fillPoolCovers(pools) {
+  const ids = [];
+  const indexById = new Map();
+  for (const [index, pool] of pools.entries()) {
+    const first = (pool.post_ids || [])[0];
+    if (first && !indexById.has(first)) {
+      indexById.set(first, []);
+      ids.push(first);
+    }
+    if (first) indexById.get(first).push(index);
+  }
+  if (!ids.length) return;
+  const extra = exclusionTagString();
+  const posts = clientFilter(await fetchPostsByIds(ids, { extraTags: extra }));
+  for (const post of posts) {
+    const indexes = indexById.get(post.id) || [];
+    for (const index of indexes) {
+      const img = document.querySelector(`[data-pool-cover="${pools[index].id}"]`);
+      const src = previewUrl(post);
+      if (img && src) {
+        img.src = src;
+        img.alt = "";
+      }
+    }
+  }
+}
+
+function renderPoolList(pools) {
+  els.grid.hidden = true;
+  els.poolList.hidden = false;
+  els.poolList.innerHTML = "";
+  for (const pool of pools) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pool-item";
+    button.dataset.poolId = String(pool.id);
+    const cover = document.createElement("img");
+    cover.className = "pool-cover";
+    cover.alt = "";
+    cover.width = 64;
+    cover.height = 64;
+    cover.dataset.poolCover = String(pool.id);
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = String(pool.name || "").replace(/_/g, " ");
+    const meta = document.createElement("span");
+    meta.className = "pool-meta";
+    meta.textContent = `${pool.post_count || (pool.post_ids || []).length} posts`;
+    text.append(title, document.createElement("br"), meta);
+    button.append(cover, text);
+    button.addEventListener("click", () => openPool(pool));
+    els.poolList.append(button);
+  }
+}
+
+async function loadPools({ page }) {
+  const abort = abortSearch();
+  beginLoad("Loading pools…");
+  try {
+    const pools = filterPools(
+      await fetchPools({
+        name: (els.poolSearch && els.poolSearch.value.trim()) || "",
+        order: (els.poolOrder && els.poolOrder.value) || "updated_at",
+        page,
+        limit: PAGE_LIMIT,
+        signal: abort.signal,
+      })
+    );
+    state.activePool = null;
+    state.poolIds = [];
+    state.posts = [];
+    state.page = page;
+    state.appended = 0;
+    state.hasMore = pools.length >= PAGE_LIMIT && page < MAX_PAGE;
+    if (els.poolNav) els.poolNav.hidden = true;
+    renderPoolList(pools);
+    if (!pools.length) setStatus("No pools found.", "warn");
+    else setStatus(`${pools.length} pools loaded.`);
+    finishLoad();
+    fillPoolCovers(pools).catch(() => {});
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    setStatus(error.message || "Could not load pools.", "error", { retry: true });
+    finishLoad();
+  }
+}
+
+async function loadPoolPosts({ page, append }) {
+  const ids = state.poolIds || [];
+  const start = (page - 1) * PAGE_LIMIT;
+  const slice = ids.slice(start, start + PAGE_LIMIT);
+  const abort = abortSearch();
+  beginLoad(append ? "Loading more pool posts…" : "Loading pool…");
+  try {
+    const extra = exclusionTagString();
+    const posts = clientFilter(await fetchPostsByIds(slice, { extraTags: extra, signal: abort.signal }));
+    state.hasMore = start + PAGE_LIMIT < ids.length;
+    state.page = page;
+    if (append) {
+      state.posts = state.posts.concat(posts);
+      state.appended += 1;
+    } else {
+      state.posts = posts;
+      state.appended = 0;
+      state.activeIndex = -1;
+    }
+    showPostGrid();
+    renderGrid(!append);
+    const name = state.activePool ? String(state.activePool.name || "").replace(/_/g, " ") : "Pool";
+    if (els.poolTitle) els.poolTitle.textContent = name;
+    if (els.poolNav) els.poolNav.hidden = false;
+    if (!state.posts.length) setStatus(`No viewable posts in ${name}.`, "warn");
+    else setStatus(`${state.posts.length} posts from ${name}.`);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    setStatus(error.message || "Could not load this pool.", "error", { retry: true });
+  } finally {
+    finishLoad();
+  }
+}
+
+function openPool(pool) {
+  state.activePool = pool;
+  state.poolIds = Array.isArray(pool.post_ids) ? pool.post_ids.slice() : [];
+  if (els.poolList) els.poolList.hidden = true;
+  loadPoolPosts({ page: 1, append: false });
+}
+
+function popularPageSlice(page, append) {
+  const start = append ? state.posts.length : (page - 1) * PAGE_LIMIT;
+  const slice = state.popularAll.slice(start, start + PAGE_LIMIT);
+  state.page = page;
+  state.hasMore = start + PAGE_LIMIT < state.popularAll.length;
+  if (append) {
+    state.posts = state.posts.concat(slice);
+    state.appended += 1;
+  } else {
+    state.posts = slice;
+    state.appended = 0;
+    state.activeIndex = -1;
+  }
+  showPostGrid();
+  renderGrid(!append);
+}
+
+async function loadPopular({ page = 1, append = false } = {}) {
+  if (append && state.popularAll.length) {
+    popularPageSlice(page, true);
+    setStatus(`${state.posts.length} popular posts loaded.`);
+    finishLoad();
+    return;
+  }
+  const scale = state.popularScale || "day";
+  const date = clampDate((els.popularDate && els.popularDate.value) || todayISO());
+  if (els.popularDate) els.popularDate.value = date;
+  const abort = abortSearch();
+  beginLoad("Loading popular posts…");
+  try {
+    const posts = clientFilter(
+      await fetchPopular({ scale, date, signal: abort.signal })
+    );
+    state.popularAll = posts;
+    popularPageSlice(1, false);
+    if (!posts.length) setStatus("No viewable popular posts for this date.", "warn");
+    else setStatus(`${posts.length} popular posts for ${scale} starting ${date}.`);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    setStatus(error.message || "Could not load popular posts.", "error", { retry: true });
+  } finally {
+    finishLoad();
+  }
+}
+
+function reloadCurrent({ page = 1, append = false } = {}) {
+  if (state.view === "favorites") return loadFavorites({ page, append });
+  if (state.view === "pools") {
+    if (state.activePool) return loadPoolPosts({ page, append });
+    return loadPools({ page });
+  }
+  if (state.view === "popular") return loadPopular({ page, append });
+  return loadPage({ page, append });
+}
+
+function setPopularScale(scale) {
+  state.popularScale = scale;
+  if (els.popularPanel) {
+    for (const button of els.popularPanel.querySelectorAll("[data-scale]")) {
+      button.setAttribute("aria-selected", button.dataset.scale === scale ? "true" : "false");
+    }
+  }
 }
 
 function bindEvents() {
@@ -575,10 +1008,16 @@ function bindEvents() {
   });
 
   els.rating.addEventListener("change", () => {
-    if (state.posts.length || els.search.value.trim()) searchFromStart();
+    if (state.view !== "search" || state.posts.length || els.search.value.trim()) {
+      reloadCurrent({ page: 1, append: false });
+    }
   });
   els.sort.addEventListener("change", () => {
-    if (state.posts.length || els.search.value.trim()) searchFromStart();
+    if (state.view === "search" || state.view === "favorites") {
+      if (state.posts.length || els.search.value.trim() || (els.favUser && els.favUser.value.trim())) {
+        reloadCurrent({ page: 1, append: false });
+      }
+    }
   });
   els.preferSample.addEventListener("change", () => {
     setItem(SAMPLE_KEY, els.preferSample.checked ? "1" : "0");
@@ -591,24 +1030,84 @@ function bindEvents() {
   els.blacklistSave.addEventListener("click", () => {
     setItem(BLACKLIST_KEY, els.blacklist.value.trim());
     setStatus("Blacklist saved for this session" + (isStoragePersistent() ? " and browser storage." : ". Storage is blocked, so it will not persist."));
-    if (state.posts.length) searchFromStart();
+    if (state.posts.length || state.view !== "search") reloadCurrent({ page: 1, append: false });
   });
 
   if (els.retry) {
     els.retry.addEventListener("click", () => {
-      searchFromStart();
+      reloadCurrent({ page: Math.max(1, state.page), append: false });
+    });
+  }
+
+  if (els.viewNav) {
+    els.viewNav.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-view]");
+      if (!button) return;
+      setView(button.dataset.view);
+    });
+  }
+
+  if (els.favoritesPanel) {
+    els.favoritesPanel.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadFavorites({ page: 1, append: false });
+    });
+  }
+  if (els.authSave) els.authSave.addEventListener("click", signIn);
+  if (els.authClear) els.authClear.addEventListener("click", signOut);
+
+  if (els.poolsPanel) {
+    els.poolsPanel.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadPools({ page: 1 });
+    });
+  }
+  if (els.poolBack) {
+    els.poolBack.addEventListener("click", () => {
+      state.activePool = null;
+      state.poolIds = [];
+      state.posts = [];
+      loadPools({ page: 1 });
+    });
+  }
+
+  if (els.popularPanel) {
+    els.popularPanel.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-scale]");
+      if (!button) return;
+      setPopularScale(button.dataset.scale);
+      loadPopular({ page: 1, append: false });
+    });
+  }
+  if (els.popularDate) {
+    els.popularDate.addEventListener("change", () => {
+      loadPopular({ page: 1, append: false });
+    });
+  }
+  if (els.popularPrev) {
+    els.popularPrev.addEventListener("click", () => {
+      const scale = state.popularScale || "day";
+      els.popularDate.value = shiftDate(els.popularDate.value || todayISO(), scale, -1);
+      loadPopular({ page: 1, append: false });
+    });
+  }
+  if (els.popularNext) {
+    els.popularNext.addEventListener("click", () => {
+      const scale = state.popularScale || "day";
+      els.popularDate.value = shiftDate(els.popularDate.value || todayISO(), scale, 1);
+      loadPopular({ page: 1, append: false });
     });
   }
 
   els.prev.addEventListener("click", () => {
-    if (state.page > 1) loadPage({ page: state.page - 1, append: false });
+    if (state.page > 1) reloadCurrent({ page: state.page - 1, append: false });
   });
   els.next.addEventListener("click", () => {
-    if (state.hasMore) loadPage({ page: state.page + 1, append: false });
+    if (state.hasMore) reloadCurrent({ page: state.page + 1, append: false });
   });
   els.more.addEventListener("click", () => {
     if (state.hasMore && state.appended < MAX_APPENDED_PAGES) {
-      loadPage({ page: state.page + 1, append: true });
+      reloadCurrent({ page: state.page + 1, append: true });
     }
   });
 
@@ -637,6 +1136,17 @@ function restorePrefs() {
   const sample = getItem(SAMPLE_KEY);
   els.preferSample.checked = sample !== "0";
   els.blacklist.value = getItem(BLACKLIST_KEY) || "";
+  if (els.favUser) els.favUser.value = getItem(FAV_USER_KEY) || "";
+  if (els.authUser) els.authUser.value = getItem(AUTH_USER_KEY) || "";
+  if (els.popularDate && !els.popularDate.value) els.popularDate.value = todayISO();
+  const rememberedKey = getItem(AUTH_KEY_KEY);
+  const rememberedUser = getItem(AUTH_USER_KEY);
+  if (rememberedKey && rememberedUser && isStoragePersistent()) {
+    setBasicAuth(rememberedUser, rememberedKey);
+    if (els.authRemember) els.authRemember.checked = true;
+  }
+  updateAuthStatus();
+  setView("search");
 }
 
 setupGate();

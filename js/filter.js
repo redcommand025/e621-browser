@@ -196,3 +196,42 @@ export function buildSearchQuery({
     warning,
   };
 }
+
+
+export function nameContainsBlockedTerm(name) {
+  const tokens = String(name || "")
+    .toLowerCase()
+    .replace(/[_\-+]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  return tokens.some((token) => BLOCKED_SET.has(token));
+}
+
+export function filterPools(pools) {
+  if (!Array.isArray(pools)) return [];
+  return pools.filter((pool) => pool && !nameContainsBlockedTerm(pool.name));
+}
+
+export function applyClientFilters(posts, { rating = "all", blacklist = [] } = {}) {
+  let out = filterPosts(posts);
+  if (rating && rating !== "all") {
+    out = out.filter((post) => post && post.rating === rating);
+  }
+  const extra = new Set((blacklist || []).map(tagName).filter(Boolean));
+  if (extra.size) {
+    out = out.filter((post) => !collectTags(post).some((tag) => extra.has(tag)));
+  }
+  return out;
+}
+
+export function sanitizeUsername(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^fav:/i, "")
+    .replace(/^@/, "");
+}
+
+export function isValidUsername(value) {
+  const name = sanitizeUsername(value);
+  return /^[A-Za-z0-9_~\-]+$/.test(name) && name.length >= 1 && name.length <= 100;
+}

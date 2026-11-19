@@ -36,6 +36,13 @@
 
     <div id="app" hidden>
       <header class="top">
+        <nav id="view-nav" class="views" role="tablist" aria-label="Browse mode">
+          <button type="button" data-view="search" aria-selected="true">Search</button>
+          <button type="button" data-view="favorites" aria-selected="false">Favorites</button>
+          <button type="button" data-view="pools" aria-selected="false">Pools</button>
+          <button type="button" data-view="popular" aria-selected="false">Popular</button>
+        </nav>
+
         <form id="search-form" autocomplete="off">
           <div class="search-wrap">
             <label class="sr-only" for="search">Tag search</label>
@@ -94,6 +101,69 @@
           </div>
         </div>
 
+        <form id="favorites-panel" class="view-panel" hidden>
+          <label for="fav-user">e621 username</label>
+          <div class="inline-row">
+            <input id="fav-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" placeholder="username" />
+            <button id="fav-load" type="submit">Load favorites</button>
+          </div>
+          <p class="muted tight">Public favorites load with just a username. An API key is only needed for private favorites.</p>
+          <details id="auth-details">
+            <summary>Optional sign-in</summary>
+            <label for="auth-user">Username</label>
+            <input id="auth-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" />
+            <label for="auth-key">API key</label>
+            <input id="auth-key" type="password" autocomplete="off" spellcheck="false" />
+            <label class="check">
+              <input id="auth-remember" type="checkbox" />
+              Remember on this device
+            </label>
+            <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so sign-in will only last until this tab closes.</p>
+            <div class="inline-row">
+              <button id="auth-save" type="button">Sign in</button>
+              <button id="auth-clear" type="button" class="secondary">Sign out</button>
+            </div>
+            <p id="auth-status" class="muted tight"></p>
+          </details>
+        </form>
+
+        <form id="pools-panel" class="view-panel" hidden>
+          <label for="pool-search">Pool name</label>
+          <div class="inline-row">
+            <input id="pool-search" type="search" spellcheck="false" placeholder="Search pools" />
+            <button id="pool-load" type="submit">Search pools</button>
+          </div>
+          <label>
+            Order
+            <select id="pool-order">
+              <option value="updated_at" selected>Recently updated</option>
+              <option value="created_at">Newest</option>
+              <option value="name">Name</option>
+              <option value="post_count">Most posts</option>
+            </select>
+          </label>
+          <div id="pool-nav" class="inline-row" hidden>
+            <button id="pool-back" type="button" class="secondary">Back to pools</button>
+            <span id="pool-title"></span>
+          </div>
+        </form>
+
+        <div id="popular-panel" class="view-panel" hidden>
+          <div class="views scale-tabs" role="tablist" aria-label="Popular range">
+            <button type="button" data-scale="day" aria-selected="true">Today</button>
+            <button type="button" data-scale="week" aria-selected="false">This week</button>
+            <button type="button" data-scale="month" aria-selected="false">This month</button>
+          </div>
+          <div class="inline-row">
+            <label class="grow">
+              Date
+              <input id="popular-date" type="date" />
+            </label>
+            <button id="popular-prev" type="button" class="secondary">Previous</button>
+            <button id="popular-next" type="button" class="secondary">Next</button>
+          </div>
+        </div>
+
         <div id="storage-banner" class="banner" hidden></div>
         <div class="status-row">
           <p id="status" class="status" aria-live="polite"></p>
@@ -102,6 +172,7 @@
       </header>
 
       <main>
+        <div id="pool-list" class="pool-list" hidden></div>
         <div id="grid" class="grid"></div>
         <div id="scroll-sentinel" class="sentinel" aria-hidden="true"></div>
         <div class="pager">
