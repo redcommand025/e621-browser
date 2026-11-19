@@ -1,0 +1,12 @@
+{
+  "name": "e621-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/filter.test.js",
+    "test:browser": "node tests/browser-test.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.31.0"
+  }
+}
