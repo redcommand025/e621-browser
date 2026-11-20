@@ -223,27 +223,38 @@ function shiftDate(iso, scale, direction) {
 }
 
 function setStatus(message, kind = "", { retry = false } = {}) {
+  if (!els.status) return;
   els.status.textContent = message || "";
   els.status.dataset.kind = kind;
   if (els.retry) els.retry.hidden = !retry;
 }
 
 function showStorageBanner() {
-  if (isStoragePersistent()) return;
+  if (isStoragePersistent() || !els.storageBanner) return;
   els.storageBanner.hidden = false;
   els.storageBanner.textContent =
     "Browser storage is blocked, so the 18+ confirmation, blacklist, saved searches, and account will reset when this tab closes.";
   setTimeout(() => {
-    els.storageBanner.hidden = true;
+    if (els.storageBanner) els.storageBanner.hidden = true;
   }, 15000);
 }
 
 function openApp() {
-  els.gate.hidden = true;
-  els.declined.hidden = true;
-  els.app.hidden = false;
-  showStorageBanner();
-  goPostsRecent();
+  try {
+    if (els.gate) els.gate.hidden = true;
+    if (els.declined) els.declined.hidden = true;
+    if (els.app) els.app.hidden = false;
+    showStorageBanner();
+  } catch (error) {
+    console.error(error);
+  }
+  return Promise.resolve()
+    .then(function () {
+      return goPostsRecent();
+    })
+    .catch(function (error) {
+      setStatus((error && error.message) || "Could not load posts.", "error", { retry: true });
+    });
 }
 
 function setupGate() {
@@ -614,9 +625,14 @@ function openViewer(index) {
 }
 
 function closeViewer() {
-  clearViewerMedia();
-  if (els.viewer.open && typeof els.viewer.close === "function") els.viewer.close();
-  else els.viewer.removeAttribute("open");
+  try {
+    if (els.viewerStage) clearViewerMedia();
+    if (!els.viewer) return;
+    if (els.viewer.open && typeof els.viewer.close === "function") els.viewer.close();
+    else els.viewer.removeAttribute("open");
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function stepViewer(delta) {
@@ -716,7 +732,7 @@ function resetResults() {
   state.appended = 0;
   state.hasMore = false;
   state.activeIndex = -1;
-  els.grid.innerHTML = "";
+  if (els.grid) els.grid.innerHTML = "";
   setStatus("");
 }
 
@@ -1435,7 +1451,7 @@ function bindEvents() {
 
 function restorePrefs() {
   const sample = getItem(SAMPLE_KEY);
-  els.preferSample.checked = sample !== "0";
+  if (els.preferSample) els.preferSample.checked = sample !== "0";
   state.blacklist = normalizeBlacklist(parseStoredList(getItem(BLACKLIST_KEY) || "", true));
   state.saved = parseStoredList(getItem(SAVED_KEY) || "");
   const today = todayISO();
@@ -1457,6 +1473,23 @@ function restorePrefs() {
   updatePopularRange();
 }
 
-restorePrefs();
-bindEvents();
-setupGate();
+function startApp() {
+  try {
+    restorePrefs();
+  } catch (error) {
+    console.error(error);
+  }
+  try {
+    bindEvents();
+  } catch (error) {
+    console.error(error);
+  }
+  try {
+    setupGate();
+  } catch (error) {
+    console.error(error);
+    setStatus((error && error.message) || "Could not start the app.", "error", { retry: true });
+  }
+}
+
+startApp();

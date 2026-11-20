@@ -619,6 +619,138 @@ try {
     }
   );
 
+  // Default all-ratings auto-load, intercepted so no live explicit media is fetched.
+  {
+    const context = await browser.createBrowserContext();
+    const page = await context.newPage();
+    await page.setViewport({ width: 360, height: 560, isMobile: true, hasTouch: true });
+    await page.setUserAgent(
+      "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+    );
+    const postsUrls = [];
+    await page.evaluateOnNewDocument(() => {
+      const fake = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        clear: () => {},
+        key: () => null,
+        length: 0,
+      };
+      Object.defineProperty(window, "localStorage", { get: () => fake });
+    });
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const url = request.url();
+      if (url.startsWith("https://e621.net/posts.json")) {
+        postsUrls.push(url);
+        request.respond({
+          status: 200,
+          contentType: "application/json",
+          headers: { "Access-Control-Allow-Origin": "*" },
+          body: JSON.stringify({
+            posts: [{
+              id: 1,
+              rating: "s",
+              tags: { general: ["canine"] },
+              flags: {},
+              file: { url: "https://example.invalid/file.png", ext: "png" },
+              files: {
+                original: { url: "https://example.invalid/file.png" },
+                preview: { url: "https://example.invalid/preview.png" },
+              },
+            }],
+          }),
+        });
+        return;
+      }
+      if (url.startsWith("https://e621.net/")) {
+        request.respond({
+          status: 200,
+          contentType: "application/json",
+          headers: { "Access-Control-Allow-Origin": "*" },
+          body: "[]",
+        });
+        return;
+      }
+      request.continue();
+    });
+    await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+    const srcs = await page.evaluate(() => ({
+      css: document.querySelector('link[rel="stylesheet"]')?.getAttribute("href"),
+      js: document.querySelector('script[type="module"]')?.getAttribute("src"),
+    }));
+    assert.match(srcs.css, /[?&]v=/);
+    assert.match(srcs.js, /[?&]v=/);
+    assert.equal(await page.$eval("#rating", (el) => el.value), "all");
+    await page.click("#age-confirm");
+    await page.waitForSelector("#app:not([hidden])");
+    await page.waitForFunction(() => /posts loaded|No posts found/i.test(document.getElementById("status")?.textContent || ""), { timeout: 20000 });
+    assert.ok(postsUrls.length >= 1, "expected a default posts request");
+    const tags = new URL(postsUrls[0]).searchParams.get("tags") || "";
+    assert.equal(/rating:s/.test(tags), false, "default load must not force Safe");
+    assert.match(tags, /(^|\s)-young(\s|$)/);
+    assert.match(tags, /(^|\s)-loli(\s|$)/);
+    assert.match(tags, /(^|\s)-shota(\s|$)/);
+    assert.match(tags, /(^|\s)-cub(\s|$)/);
+    const status = await page.$eval("#status", (el) => el.textContent);
+    assert.match(status, /posts loaded/i);
+    log("PASS default all-ratings recent load (getItem always null) sends exclusions and shows results");
+    await context.close();
+  }
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({ width: 360, height: 560, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+      await page.evaluateOnNewDocument(() => {
+        const boom = () => { throw new Error("storage blocked"); };
+        const fake = {
+          getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom,
+          get length() { throw new Error("storage blocked"); },
+        };
+        Object.defineProperty(window, "localStorage", { get: () => fake });
+      });
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const layout = await page.evaluate(() => {
+        const first = document.querySelector("#grid .thumb");
+        const views = document.querySelector('.views button');
+        const sub = document.querySelector('.sub-bar button');
+        const chrome = document.querySelector(".chrome");
+        const banner = document.getElementById("storage-banner");
+        const fr = first.getBoundingClientRect();
+        return {
+          innerH: window.innerHeight,
+          chromeH: Math.round(chrome.getBoundingClientRect().height),
+          topH: Math.round(document.querySelector(".top").getBoundingClientRect().height),
+          bannerH: Math.round(banner.getBoundingClientRect().height),
+          bannerHidden: banner.hidden,
+          firstTop: Math.round(fr.top),
+          firstVisible: Math.min(fr.bottom, window.innerHeight) - Math.max(fr.top, 0),
+          viewH: Math.round(getComputedStyle(views).minHeight.replace("px", "")),
+          subH: Math.round(getComputedStyle(sub).minHeight.replace("px", "")),
+        };
+      });
+      assert.ok(layout.firstVisible >= 80, `first post not visible under header: ${JSON.stringify(layout)}`);
+      assert.ok(layout.chromeH < layout.innerH * 0.5, `sticky chrome too tall: ${JSON.stringify(layout)}`);
+      assert.ok(layout.viewH <= 36 && layout.viewH >= 28, `views button height ${layout.viewH}`);
+      assert.ok(layout.subH <= 36 && layout.subH >= 28, `sub-bar button height ${layout.subH}`);
+      await page.click('[data-sub="popular"]');
+      await page.waitForSelector("#popular-panel:not([hidden])");
+      const popH = await page.$eval(".popular-grid button", (el) => Math.round(getComputedStyle(el).minHeight.replace("px", "")));
+      assert.ok(popH <= 36 && popH >= 28, `popular button height ${popH}`);
+      log(`PASS compact header leaves posts visible on a short phone (${JSON.stringify(layout)}, popular=${popH})`);
+    }
+  );
+
 
   log("All browser tests passed.");
 } catch (error) {

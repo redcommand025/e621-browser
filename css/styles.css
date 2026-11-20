@@ -249,8 +249,8 @@ select {
 
 .brand,
 .brand-mark {
-  margin: 0 0 10px;
-  font-size: 1.7rem;
+  margin: 0 0 6px;
+  font-size: 1.35rem;
   font-weight: 800;
   letter-spacing: 0.04em;
   color: #ffd6db;
@@ -263,26 +263,52 @@ select {
 }
 
 .top {
+  position: relative;
+  z-index: 20;
+  padding: 8px 12px 8px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--line);
+}
+
+.chrome {
   position: sticky;
   top: 0;
-  z-index: 20;
-  background: color-mix(in srgb, #0a0204 88%, transparent);
+  z-index: 21;
+  margin: 0 -12px 4px;
+  padding: 6px 12px 8px;
+  background: #140308;
+  background: color-mix(in srgb, #0a0204 94%, transparent);
   backdrop-filter: blur(10px);
-  padding: 12px 12px 8px;
-  padding-top: max(12px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--line);
 }
 
 .top-bar {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+
+.views {
+  margin-bottom: 0;
+  gap: 5px;
+}
+
+.views button,
+.sub-bar button,
+.popular-grid button,
+.top-bar button,
+.top-bar input[type="search"] {
+  min-height: 32px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .sub-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 5px;
+  margin-top: 6px;
 }
 
 .sub-bar button {
@@ -290,7 +316,9 @@ select {
   color: var(--text);
   border-color: var(--line);
   font-weight: 600;
-  flex: 1 1 auto;
+  flex: 1 1 calc(33% - 5px);
+  white-space: nowrap;
+  font-size: 0.9rem;
 }
 
 .sub-bar button[aria-selected="true"] {
@@ -302,7 +330,7 @@ select {
 .popular-grid {
   display: grid;
   grid-template-columns: 1fr 1.2fr 1fr;
-  gap: 6px;
+  gap: 5px;
 }
 
 .popular-grid button {
@@ -418,7 +446,7 @@ select {
   flex-wrap: wrap;
   gap: 8px;
   align-items: end;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .controls label {
@@ -483,8 +511,9 @@ select {
 .banner {
   background: #3a1218;
   color: #ffd0d5;
-  border-radius: 10px;
-  padding: 8px 12px;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
 }
 
 .status[data-kind="error"] {
