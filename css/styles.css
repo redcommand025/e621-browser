@@ -6,30 +6,37 @@
 
 :root {
   color-scheme: dark;
-  --bg: #11141a;
-  --bg-raise: #1a1f29;
-  --bg-soft: #232a36;
-  --text: #eef2f7;
-  --muted: #9aa6b8;
-  --line: #313a4a;
-  --accent: #f0b429;
-  --accent-text: #1a1404;
-  --danger: #f07178;
+  --bg: #050204;
+  --bg-raise: #1a080c;
+  --bg-soft: #2a0e14;
+  --text: #f6ecee;
+  --muted: #c9a4aa;
+  --line: #6a2430;
+  --accent: #e31c34;
+  --accent-text: #fff7f7;
+  --danger: #ff6b75;
   --safe: #62c370;
   --questionable: #e2c04c;
   --explicit: #e06c75;
-  --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
   --radius: 14px;
   --tap: 44px;
+  --hex: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath fill='none' stroke='%236b1018' stroke-width='1.15' d='M28 2 L54 17 V47 L28 62 L2 47 V17 Z M28 62 L54 77 V107 M28 62 L2 77 V107 M-26 62 L2 77 M54 77 L82 62'/%3E%3C/svg%3E");
 }
 
 html,
 body {
   margin: 0;
   min-height: 100%;
-  background: var(--bg);
   color: var(--text);
   font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background-color: #000;
+  background-image:
+    linear-gradient(to right, rgba(140, 8, 24, 0.92), transparent 5%, transparent 95%, rgba(140, 8, 24, 0.92)),
+    linear-gradient(to bottom, rgba(140, 8, 24, 0.92), transparent 5%, transparent 95%, rgba(140, 8, 24, 0.92)),
+    var(--hex);
+  background-attachment: fixed;
+  background-size: auto, auto, 56px 100px;
 }
 
 button,
@@ -104,7 +111,12 @@ select {
   place-items: center;
   padding: 24px;
   padding-top: max(24px, env(safe-area-inset-top));
-  background: var(--bg);
+  background-color: #000;
+  background-image:
+    linear-gradient(to right, rgba(140, 8, 24, 0.92), transparent 5%, transparent 95%, rgba(140, 8, 24, 0.92)),
+    linear-gradient(to bottom, rgba(140, 8, 24, 0.92), transparent 5%, transparent 95%, rgba(140, 8, 24, 0.92)),
+    var(--hex);
+  background-size: auto, auto, 56px 100px;
   overflow: auto;
 }
 
@@ -235,14 +247,124 @@ select {
   color: var(--text);
 }
 
+.brand,
+.brand-mark {
+  margin: 0 0 10px;
+  font-size: 1.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #ffd6db;
+  text-shadow: 0 0 18px rgba(227, 28, 52, 0.45);
+}
+
+.brand-mark {
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
 .top {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: color-mix(in srgb, #0a0204 88%, transparent);
   backdrop-filter: blur(10px);
   padding: 12px 12px 8px;
+  padding-top: max(12px, env(safe-area-inset-top));
   border-bottom: 1px solid var(--line);
+}
+
+.top-bar {
+  display: grid;
+  gap: 8px;
+}
+
+.sub-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sub-bar button {
+  background: var(--bg-soft);
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 600;
+  flex: 1 1 auto;
+}
+
+.sub-bar button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+.popular-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 6px;
+}
+
+.popular-grid button {
+  background: var(--bg-soft);
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 650;
+}
+
+.popular-grid button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+.popular-range {
+  margin: 4px 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.chip-list,
+.saved-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.chip-list li,
+.saved-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 8px;
+}
+
+.chip-list button,
+.saved-list button.secondary {
+  width: auto;
+  min-height: 36px;
+}
+
+.saved-list button:not(.secondary) {
+  width: auto;
+  flex: 1;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 700px) {
+  .top-bar {
+    grid-template-columns: auto 1fr;
+    align-items: start;
+  }
+  .views { margin-bottom: 0; }
 }
 
 #search-form {
@@ -359,8 +481,8 @@ select {
 }
 
 .banner {
-  background: #3a2a12;
-  color: #ffd38a;
+  background: #3a1218;
+  color: #ffd0d5;
   border-radius: 10px;
   padding: 8px 12px;
 }

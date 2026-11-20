@@ -4,12 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <title>e621 Browser</title>
+    <title>e621-red</title>
     <link rel="stylesheet" href="css/styles.css" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
       <div class="panel">
+        <p class="brand-mark">e621-red</p>
         <h1 id="gate-title">18+ only</h1>
         <p>
           This unofficial browser shows artwork from e621, including adult
@@ -17,8 +18,7 @@
         </p>
         <p class="muted">
           After you confirm, all ratings are shown. Some tags are always hidden
-          and cannot be turned on. No results are loaded until you confirm and
-          search.
+          and cannot be turned on.
         </p>
         <div class="actions">
           <button id="age-confirm" type="button">I am 18 or older</button>
@@ -36,32 +36,41 @@
 
     <div id="app" hidden>
       <header class="top">
-        <nav id="view-nav" class="views" role="tablist" aria-label="Browse mode">
-          <button type="button" data-view="search" aria-selected="true">Search</button>
-          <button type="button" data-view="favorites" aria-selected="false">Favorites</button>
-          <button type="button" data-view="pools" aria-selected="false">Pools</button>
-          <button type="button" data-view="popular" aria-selected="false">Popular</button>
-        </nav>
+        <h1 class="brand">e621-red</h1>
 
-        <form id="search-form" autocomplete="off">
-          <div class="search-wrap">
-            <label class="sr-only" for="search">Tag search</label>
-            <input
-              id="search"
-              type="search"
-              enterkeyhint="search"
-              spellcheck="false"
-              autocapitalize="none"
-              autocomplete="off"
-              aria-autocomplete="list"
-              aria-controls="suggest"
-              aria-expanded="false"
-              placeholder="Search tags, e.g. canine solo"
-            />
-            <ul id="suggest" role="listbox" hidden></ul>
-          </div>
-          <button type="submit">Search</button>
-        </form>
+        <div class="top-bar">
+          <nav id="view-nav" class="views" role="tablist" aria-label="Main sections">
+            <button type="button" data-view="posts" aria-selected="true">Posts</button>
+            <button type="button" data-view="pools" aria-selected="false">Pools</button>
+          </nav>
+          <form id="search-form" autocomplete="off">
+            <div class="search-wrap">
+              <label class="sr-only" for="search">Tag search</label>
+              <input
+                id="search"
+                type="search"
+                enterkeyhint="search"
+                spellcheck="false"
+                autocapitalize="none"
+                autocomplete="off"
+                aria-autocomplete="list"
+                aria-controls="suggest"
+                aria-expanded="false"
+                placeholder="Search tags, e.g. canine solo"
+              />
+              <ul id="suggest" role="listbox" hidden></ul>
+            </div>
+            <button type="submit">Search</button>
+          </form>
+        </div>
+
+        <nav id="sub-nav" class="sub-bar" role="tablist" aria-label="Posts tools">
+          <button type="button" data-sub="hot" aria-selected="false">Hot</button>
+          <button type="button" data-sub="popular" aria-selected="false">Popular</button>
+          <button type="button" data-sub="favorites" aria-selected="false">Favorites</button>
+          <button type="button" data-sub="blacklist" aria-selected="false">Blacklist</button>
+          <button type="button" data-sub="saved" aria-selected="false">Saved</button>
+        </nav>
 
         <div class="controls">
           <label>
@@ -90,15 +99,6 @@
             <input id="prefer-sample" type="checkbox" checked />
             Prefer sample
           </label>
-          <button id="blacklist-toggle" type="button" class="secondary">Blacklist</button>
-        </div>
-
-        <div id="blacklist-panel" class="blacklist" hidden>
-          <label for="blacklist">Hide posts that have any of these tags</label>
-          <div class="blacklist-row">
-            <input id="blacklist" type="text" spellcheck="false" placeholder="tag_one tag_two" />
-            <button id="blacklist-save" type="button">Save</button>
-          </div>
         </div>
 
         <form id="favorites-panel" class="view-panel" hidden>
@@ -108,17 +108,18 @@
             <button id="fav-load" type="submit">Load favorites</button>
           </div>
           <p class="muted tight">Public favorites load with just a username. An API key is only needed for private favorites.</p>
+          <label class="check">
+            <input id="auth-remember" type="checkbox" />
+            Remember my account
+          </label>
+          <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
+          <p class="muted tight">If you also enter an API key and check remember, that key is saved on this device.</p>
           <details id="auth-details">
-            <summary>Optional sign-in</summary>
+            <summary>Optional API key</summary>
             <label for="auth-user">Username</label>
             <input id="auth-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" />
             <label for="auth-key">API key</label>
             <input id="auth-key" type="password" autocomplete="off" spellcheck="false" />
-            <label class="check">
-              <input id="auth-remember" type="checkbox" />
-              Remember on this device
-            </label>
-            <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so sign-in will only last until this tab closes.</p>
             <div class="inline-row">
               <button id="auth-save" type="button">Sign in</button>
               <button id="auth-clear" type="button" class="secondary">Sign out</button>
@@ -149,19 +150,41 @@
         </form>
 
         <div id="popular-panel" class="view-panel" hidden>
-          <div class="views scale-tabs" role="tablist" aria-label="Popular range">
-            <button type="button" data-scale="day" aria-selected="true">Today</button>
-            <button type="button" data-scale="week" aria-selected="false">This week</button>
-            <button type="button" data-scale="month" aria-selected="false">This month</button>
+          <div id="popular-grid" class="popular-grid" role="group" aria-label="Popular range">
+            <button type="button" data-pop="prev" data-scale="day">«prev</button>
+            <button type="button" data-pop="scale" data-scale="day" aria-selected="true">Day</button>
+            <button type="button" data-pop="next" data-scale="day">next»</button>
+            <button type="button" data-pop="prev" data-scale="week">«prev</button>
+            <button type="button" data-pop="scale" data-scale="week" aria-selected="false">Week</button>
+            <button type="button" data-pop="next" data-scale="week">next»</button>
+            <button type="button" data-pop="prev" data-scale="month">«prev</button>
+            <button type="button" data-pop="scale" data-scale="month" aria-selected="false">Month</button>
+            <button type="button" data-pop="next" data-scale="month">next»</button>
           </div>
-          <div class="inline-row">
-            <label class="grow">
-              Date
-              <input id="popular-date" type="date" />
+          <p id="popular-range" class="popular-range"></p>
+        </div>
+
+        <div id="blacklist-panel" class="view-panel" hidden>
+          <p class="muted tight">Always hidden, and not removable: young, loli, shota, cub.</p>
+          <form id="blacklist-form" class="inline-row">
+            <label class="grow" for="blacklist-add">Add a tag to your blacklist
+              <input id="blacklist-add" type="text" spellcheck="false" placeholder="tag_name" />
             </label>
-            <button id="popular-prev" type="button" class="secondary">Previous</button>
-            <button id="popular-next" type="button" class="secondary">Next</button>
+            <button type="submit">Add</button>
+          </form>
+          <ul id="blacklist-list" class="chip-list"></ul>
+          <p id="blacklist-empty" class="muted tight">No extra tags on your blacklist.</p>
+          <p id="blacklist-storage-note" class="muted tight" hidden>Storage is blocked, so this list lasts only until this tab closes.</p>
+        </div>
+
+        <div id="saved-panel" class="view-panel" hidden>
+          <div class="inline-row">
+            <button id="saved-add" type="button">Save current search</button>
           </div>
+          <p class="muted tight">Example: canid order:score</p>
+          <ul id="saved-list" class="saved-list"></ul>
+          <p id="saved-empty" class="muted tight">No saved searches yet.</p>
+          <p id="saved-storage-note" class="muted tight" hidden>Storage is blocked, so saved searches last only until this tab closes.</p>
         </div>
 
         <div id="storage-banner" class="banner" hidden></div>
@@ -182,7 +205,7 @@
           <button id="more" type="button" disabled>Load more</button>
         </div>
         <p class="footer-note">
-          Unofficial client for the public e621 API. Not affiliated with e621.
+          Unofficial e621-red client for the public e621 API. Not affiliated with e621.
         </p>
       </main>
     </div>

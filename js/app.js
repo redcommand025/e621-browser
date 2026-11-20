@@ -7,6 +7,7 @@ import {
   isBlockedTag,
   isValidUsername,
   sanitizeUsername,
+  tagName,
   tokenize,
 } from "./filter.js";
 import {
@@ -41,6 +42,7 @@ const BLACKLIST_KEY = "e621-browser:blacklist";
 const FAV_USER_KEY = "e621-browser:fav-user";
 const AUTH_USER_KEY = "e621-browser:auth-user";
 const AUTH_KEY_KEY = "e621-browser:auth-key";
+const SAVED_KEY = "e621-browser:saved-searches";
 const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
 const MAX_APPENDED_PAGES = 5;
@@ -58,10 +60,18 @@ const els = {
   rating: document.getElementById("rating"),
   sort: document.getElementById("sort"),
   preferSample: document.getElementById("prefer-sample"),
-  blacklistToggle: document.getElementById("blacklist-toggle"),
+  subNav: document.getElementById("sub-nav"),
   blacklistPanel: document.getElementById("blacklist-panel"),
-  blacklist: document.getElementById("blacklist"),
-  blacklistSave: document.getElementById("blacklist-save"),
+  blacklistForm: document.getElementById("blacklist-form"),
+  blacklistAdd: document.getElementById("blacklist-add"),
+  blacklistList: document.getElementById("blacklist-list"),
+  blacklistEmpty: document.getElementById("blacklist-empty"),
+  blacklistStorageNote: document.getElementById("blacklist-storage-note"),
+  savedPanel: document.getElementById("saved-panel"),
+  savedAdd: document.getElementById("saved-add"),
+  savedList: document.getElementById("saved-list"),
+  savedEmpty: document.getElementById("saved-empty"),
+  savedStorageNote: document.getElementById("saved-storage-note"),
   storageBanner: document.getElementById("storage-banner"),
   status: document.getElementById("status"),
   grid: document.getElementById("grid"),
@@ -99,9 +109,7 @@ const els = {
   poolTitle: document.getElementById("pool-title"),
   poolList: document.getElementById("pool-list"),
   popularPanel: document.getElementById("popular-panel"),
-  popularDate: document.getElementById("popular-date"),
-  popularPrev: document.getElementById("popular-prev"),
-  popularNext: document.getElementById("popular-next"),
+  popularRange: document.getElementById("popular-range"),
 };
 
 const state = {
@@ -118,22 +126,60 @@ const state = {
   suggestAbort: null,
   searchAbort: null,
   suggestSeq: 0,
-  view: "search",
+  view: "posts",
+  sub: "",
+  blacklist: [],
+  saved: [],
   activePool: null,
   poolIds: [],
   popularScale: "day",
+  popularDates: {},
   popularAll: [],
 };
 
+function parseStoredList(raw, asTags = false) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
+    }
+  } catch {
+    /* plain text */
+  }
+  return asTags ? tokenize(raw) : [];
+}
+
+function normalizeBlacklist(tags) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of tags || []) {
+    const name = tagName(raw);
+    if (!name || isBlockedTag(name) || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 function blacklistTags() {
-  return tokenize(els.blacklist.value || getItem(BLACKLIST_KEY) || "");
+  return state.blacklist.slice();
+}
+
+function persistBlacklist() {
+  setItem(BLACKLIST_KEY, JSON.stringify(state.blacklist));
+}
+
+function orderFromSearch() {
+  const token = tokenize(els.search.value).find((item) => /^order:/i.test(item));
+  return token || "";
 }
 
 function currentQuery() {
   return buildSearchQuery({
     userQuery: els.search.value,
     rating: els.rating.value,
-    order: els.sort.value,
+    order: orderFromSearch() || els.sort.value,
     blacklist: blacklistTags(),
   });
 }
@@ -186,7 +232,7 @@ function showStorageBanner() {
   if (isStoragePersistent()) return;
   els.storageBanner.hidden = false;
   els.storageBanner.textContent =
-    "Browser storage is blocked, so the 18+ confirmation and blacklist will reset when this tab closes.";
+    "Browser storage is blocked, so the 18+ confirmation, blacklist, saved searches, and account will reset when this tab closes.";
   setTimeout(() => {
     els.storageBanner.hidden = true;
   }, 15000);
@@ -197,7 +243,7 @@ function openApp() {
   els.declined.hidden = true;
   els.app.hidden = false;
   showStorageBanner();
-  els.search.focus();
+  goPostsRecent();
 }
 
 function setupGate() {
@@ -663,6 +709,29 @@ function assignPosts(posts, { page, append, pageSize = PAGE_LIMIT }) {
   renderGrid(!append);
 }
 
+function resetResults() {
+  state.posts = [];
+  state.popularAll = [];
+  state.page = 1;
+  state.appended = 0;
+  state.hasMore = false;
+  state.activeIndex = -1;
+  els.grid.innerHTML = "";
+  setStatus("");
+}
+
+function hidePostsSubPanels() {
+  if (els.favoritesPanel) els.favoritesPanel.hidden = true;
+  if (els.popularPanel) els.popularPanel.hidden = true;
+  if (els.blacklistPanel) els.blacklistPanel.hidden = true;
+  if (els.savedPanel) els.savedPanel.hidden = true;
+}
+
+function updateSortVisibility() {
+  const sortLabel = els.sort && els.sort.closest("label");
+  if (sortLabel) sortLabel.hidden = state.view === "pools" || state.sub === "popular";
+}
+
 function setView(view) {
   state.view = view;
   if (view !== "pools") {
@@ -676,41 +745,250 @@ function setView(view) {
       button.setAttribute("aria-selected", button.dataset.view === view ? "true" : "false");
     }
   }
-  if (els.form) els.form.hidden = view !== "search";
-  if (els.favoritesPanel) els.favoritesPanel.hidden = view !== "favorites";
+  const posts = view === "posts";
+  if (els.form) els.form.hidden = !posts;
+  if (els.subNav) els.subNav.hidden = !posts;
   if (els.poolsPanel) els.poolsPanel.hidden = view !== "pools";
-  if (els.popularPanel) els.popularPanel.hidden = view !== "popular";
   if (els.poolList) els.poolList.hidden = view !== "pools" || Boolean(state.activePool);
   if (els.poolNav) els.poolNav.hidden = !(view === "pools" && state.activePool);
-  els.grid.hidden = view === "pools" && !state.activePool;
-  const sortLabel = els.sort && els.sort.closest("label");
-  if (sortLabel) sortLabel.hidden = view === "pools" || view === "popular";
-  if (view !== "pools") {
-    if (els.poolList) els.poolList.innerHTML = "";
+  if (!posts) {
+    state.sub = "";
+    hidePostsSubPanels();
+    if (els.subNav) {
+      for (const button of els.subNav.querySelectorAll("[data-sub]")) {
+        button.setAttribute("aria-selected", "false");
+      }
+    }
   }
-  state.posts = [];
-  state.popularAll = [];
-  state.page = 1;
-  state.appended = 0;
-  state.hasMore = false;
-  state.activeIndex = -1;
-  els.grid.innerHTML = "";
-  setStatus("");
+  els.grid.hidden = view === "pools" && !state.activePool;
+  const pager = document.querySelector(".pager");
+  if (pager) pager.hidden = view === "pools" && !state.activePool;
+  updateSortVisibility();
+  if (view !== "pools" && els.poolList) els.poolList.innerHTML = "";
+  resetResults();
+}
+
+function setSub(sub) {
+  state.sub = sub || "";
+  if (els.subNav) {
+    for (const button of els.subNav.querySelectorAll("[data-sub]")) {
+      button.setAttribute("aria-selected", button.dataset.sub === state.sub ? "true" : "false");
+    }
+  }
+  if (els.favoritesPanel) els.favoritesPanel.hidden = state.sub !== "favorites";
+  if (els.popularPanel) els.popularPanel.hidden = state.sub !== "popular";
+  if (els.blacklistPanel) els.blacklistPanel.hidden = state.sub !== "blacklist";
+  if (els.savedPanel) els.savedPanel.hidden = state.sub !== "saved";
+  updateSortVisibility();
+  const showGrid = state.view === "posts" && state.sub !== "blacklist" && state.sub !== "saved";
+  els.grid.hidden = !showGrid;
+  const pager = document.querySelector(".pager");
+  if (pager) pager.hidden = !showGrid;
+}
+
+function goPostsRecent() {
+  if (els.search) els.search.value = "";
+  if (els.sort) els.sort.value = "";
+  setView("posts");
+  setSub("");
+  return loadPage({ page: 1, append: false });
+}
+
+function runHot() {
+  setView("posts");
+  const tokens = tokenize(els.search.value).filter((item) => !/^[-]?order:/i.test(item));
+  tokens.push("order:hot");
+  els.search.value = tokens.join(" ");
+  if (els.sort) els.sort.value = "";
+  setSub("hot");
+  return searchFromStart();
+}
+
+function persistAccountIfNeeded() {
+  if (!(els.authRemember && els.authRemember.checked)) {
+    removeItem(FAV_USER_KEY);
+    removeItem(AUTH_USER_KEY);
+    removeAuthKey();
+    return;
+  }
+  const fav = sanitizeUsername(els.favUser && els.favUser.value);
+  const auth = sanitizeUsername(els.authUser && els.authUser.value) || fav;
+  if (fav) setItem(FAV_USER_KEY, fav);
+  if (auth) setItem(AUTH_USER_KEY, auth);
+}
+
+function renderBlacklist() {
+  if (!els.blacklistList) return;
+  if (els.blacklistStorageNote) els.blacklistStorageNote.hidden = isStoragePersistent();
+  els.blacklistList.innerHTML = "";
+  for (const tag of state.blacklist) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = tag;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      state.blacklist = state.blacklist.filter((entry) => entry !== tag);
+      persistBlacklist();
+      renderBlacklist();
+      setStatus("Removed " + tag + " from your blacklist.");
+    });
+    item.append(name, remove);
+    els.blacklistList.append(item);
+  }
+  if (els.blacklistEmpty) els.blacklistEmpty.hidden = state.blacklist.length > 0;
+}
+
+function addBlacklistTag(raw) {
+  const tokens = tokenize(raw);
+  if (!tokens.length) {
+    setStatus("Enter a tag to blacklist.", "error");
+    return;
+  }
+  if (tokens.every((item) => isBlockedTag(item))) {
+    setStatus("That tag is already always hidden and cannot be added to your list.", "warn");
+    return;
+  }
+  const names = normalizeBlacklist(tokens);
+  let added = 0;
+  for (const name of names) {
+    if (!state.blacklist.includes(name)) {
+      state.blacklist.push(name);
+      added += 1;
+    }
+  }
+  persistBlacklist();
+  renderBlacklist();
+  if (els.blacklistAdd) els.blacklistAdd.value = "";
+  if (!added) setStatus("That tag is already on your blacklist.");
+  else setStatus("Blacklist updated" + (isStoragePersistent() ? "." : ". Storage is blocked, so this lasts only until this tab closes."));
+}
+
+function persistSaved() {
+  setItem(SAVED_KEY, JSON.stringify(state.saved));
+}
+
+function renderSaved() {
+  if (!els.savedList) return;
+  if (els.savedStorageNote) els.savedStorageNote.hidden = isStoragePersistent();
+  els.savedList.innerHTML = "";
+  for (const query of state.saved) {
+    const item = document.createElement("li");
+    const run = document.createElement("button");
+    run.type = "button";
+    run.textContent = query;
+    run.addEventListener("click", () => runSaved(query));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.saved = state.saved.filter((entry) => entry !== query);
+      persistSaved();
+      renderSaved();
+      setStatus("Deleted saved search.");
+    });
+    item.append(run, remove);
+    els.savedList.append(item);
+  }
+  if (els.savedEmpty) els.savedEmpty.hidden = state.saved.length > 0;
+}
+
+function saveCurrentSearch() {
+  const query = (els.search.value || "").trim();
+  if (!query) {
+    setStatus("Type a search to save, for example canid order:score.", "error");
+    return;
+  }
+  if (state.saved.includes(query)) {
+    setStatus("That search is already saved.");
+    renderSaved();
+    return;
+  }
+  state.saved.push(query);
+  persistSaved();
+  renderSaved();
+  setStatus("Search saved" + (isStoragePersistent() ? "." : ". Storage is blocked, so this lasts only until this tab closes."));
+}
+
+function runSaved(query) {
+  setView("posts");
+  els.search.value = query;
+  if (/\border:hot\b/i.test(query)) setSub("hot");
+  else setSub("");
+  return searchFromStart();
+}
+
+function activateSub(sub) {
+  if (state.view !== "posts") setView("posts");
+  if (sub === "hot") return runHot();
+  resetResults();
+  setSub(sub);
+  if (sub === "popular") {
+    if (!state.popularScale) state.popularScale = "day";
+    syncPopularButtons();
+    updatePopularRange();
+    return loadPopular({ page: 1, append: false });
+  }
+  if (sub === "favorites") {
+    setStatus("Enter an e621 username to load favorites.");
+    return;
+  }
+  if (sub === "blacklist") {
+    renderBlacklist();
+    return;
+  }
+  if (sub === "saved") {
+    renderSaved();
+  }
+}
+
+function popularDate(scale) {
+  if (!state.popularDates) state.popularDates = {};
+  return state.popularDates[scale] || todayISO();
+}
+
+function setPopularDate(scale, iso) {
+  if (!state.popularDates) state.popularDates = {};
+  state.popularDates[scale] = clampDate(iso);
+}
+
+function formatPopularRange(scale, iso) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const fmt = (date) => date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  if (scale === "day") return fmt(start);
+  if (scale === "week") return "Week of " + fmt(start);
+  return start.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+}
+
+function updatePopularRange() {
+  if (!els.popularRange) return;
+  const scale = state.popularScale || "day";
+  const label = scale === "day" ? "Day" : scale === "week" ? "Week" : "Month";
+  els.popularRange.textContent = label + ": " + formatPopularRange(scale, popularDate(scale));
+}
+
+function syncPopularButtons() {
+  if (!els.popularPanel) return;
+  for (const button of els.popularPanel.querySelectorAll("[data-pop='scale']")) {
+    button.setAttribute("aria-selected", button.dataset.scale === state.popularScale ? "true" : "false");
+  }
 }
 
 function updateAuthStatus() {
   if (!els.authStatus) return;
+  const remember = Boolean(els.authRemember && els.authRemember.checked);
   if (hasBasicAuth()) {
-    els.authStatus.textContent = `Signed in as ${basicAuthUsername()}. The API key stays in this tab` + (isStoragePersistent() && els.authRemember.checked ? " and on this device." : " only.");
+    els.authStatus.textContent = `Signed in as ${basicAuthUsername()}. The API key stays in this tab` + (remember && isStoragePersistent() ? " and on this device." : " only.");
   } else {
     els.authStatus.textContent = "Not signed in. Public favorites still work.";
   }
   if (els.authRememberNote) {
     els.authRememberNote.hidden = isStoragePersistent();
-  }
-  if (els.authRemember && !isStoragePersistent()) {
-    els.authRemember.checked = false;
-    els.authRemember.disabled = true;
   }
 }
 
@@ -725,15 +1003,23 @@ function signIn() {
     setStatus("Enter a username and API key to sign in.", "error");
     return;
   }
-  const remember = Boolean(els.authRemember && els.authRemember.checked && isStoragePersistent());
+  const remember = Boolean(els.authRemember && els.authRemember.checked);
   setBasicAuth(username, apiKey);
-  setItem(AUTH_USER_KEY, username);
-  if (remember) setItem(AUTH_KEY_KEY, apiKey);
-  else removeAuthKey();
+  if (remember) {
+    setItem(AUTH_USER_KEY, username);
+    setItem(AUTH_KEY_KEY, apiKey);
+    if (els.favUser && !els.favUser.value) els.favUser.value = username;
+    persistAccountIfNeeded();
+  } else {
+    removeAuthKey();
+  }
   els.authKey.value = "";
   if (els.favUser && !els.favUser.value) els.favUser.value = username;
   updateAuthStatus();
-  setStatus("Signed in. Private favorites will use this API key.");
+  const keyNote = remember
+    ? (isStoragePersistent() ? " The API key is saved on this device." : " Storage is blocked, so the API key is remembered only until this tab closes.")
+    : "";
+  setStatus("Signed in. Private favorites will use this API key." + keyNote);
 }
 
 function signOut() {
@@ -750,7 +1036,7 @@ async function loadFavorites({ page, append }) {
     setStatus("Enter a valid e621 username to load favorites.", "error");
     return;
   }
-  setItem(FAV_USER_KEY, username);
+  if (els.authRemember && els.authRemember.checked) setItem(FAV_USER_KEY, username);
   const built = buildSearchQuery({
     userQuery: `fav:${username}`,
     rating: els.rating.value,
@@ -933,8 +1219,10 @@ async function loadPopular({ page = 1, append = false } = {}) {
     return;
   }
   const scale = state.popularScale || "day";
-  const date = clampDate((els.popularDate && els.popularDate.value) || todayISO());
-  if (els.popularDate) els.popularDate.value = date;
+  const date = clampDate(popularDate(scale));
+  setPopularDate(scale, date);
+  updatePopularRange();
+  syncPopularButtons();
   const abort = abortSearch();
   beginLoad("Loading popular posts…");
   try {
@@ -954,22 +1242,14 @@ async function loadPopular({ page = 1, append = false } = {}) {
 }
 
 function reloadCurrent({ page = 1, append = false } = {}) {
-  if (state.view === "favorites") return loadFavorites({ page, append });
   if (state.view === "pools") {
     if (state.activePool) return loadPoolPosts({ page, append });
     return loadPools({ page });
   }
-  if (state.view === "popular") return loadPopular({ page, append });
+  if (state.sub === "favorites") return loadFavorites({ page, append });
+  if (state.sub === "popular") return loadPopular({ page, append });
+  if (state.sub === "blacklist" || state.sub === "saved") return;
   return loadPage({ page, append });
-}
-
-function setPopularScale(scale) {
-  state.popularScale = scale;
-  if (els.popularPanel) {
-    for (const button of els.popularPanel.querySelectorAll("[data-scale]")) {
-      button.setAttribute("aria-selected", button.dataset.scale === scale ? "true" : "false");
-    }
-  }
 }
 
 function bindEvents() {
@@ -1008,15 +1288,18 @@ function bindEvents() {
   });
 
   els.rating.addEventListener("change", () => {
-    if (state.view !== "search" || state.posts.length || els.search.value.trim()) {
-      reloadCurrent({ page: 1, append: false });
-    }
+    if (els.app.hidden) return;
+    if (state.sub === "blacklist" || state.sub === "saved") return;
+    reloadCurrent({ page: 1, append: false });
   });
   els.sort.addEventListener("change", () => {
-    if (state.view === "search" || state.view === "favorites") {
-      if (state.posts.length || els.search.value.trim() || (els.favUser && els.favUser.value.trim())) {
-        reloadCurrent({ page: 1, append: false });
-      }
+    const tokens = tokenize(els.search.value).filter((item) => !/^[-]?order:/i.test(item));
+    els.search.value = tokens.join(" ");
+    if (els.app.hidden) return;
+    if (state.sub === "hot") setSub("");
+    if (state.sub === "blacklist" || state.sub === "saved") return;
+    if (state.view === "posts" || state.view === "pools") {
+      reloadCurrent({ page: 1, append: false });
     }
   });
   els.preferSample.addEventListener("change", () => {
@@ -1024,14 +1307,13 @@ function bindEvents() {
     if (els.viewer.open && state.activeIndex >= 0) renderViewer();
   });
 
-  els.blacklistToggle.addEventListener("click", () => {
-    els.blacklistPanel.hidden = !els.blacklistPanel.hidden;
-  });
-  els.blacklistSave.addEventListener("click", () => {
-    setItem(BLACKLIST_KEY, els.blacklist.value.trim());
-    setStatus("Blacklist saved for this session" + (isStoragePersistent() ? " and browser storage." : ". Storage is blocked, so it will not persist."));
-    if (state.posts.length || state.view !== "search") reloadCurrent({ page: 1, append: false });
-  });
+  if (els.blacklistForm) {
+    els.blacklistForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      addBlacklistTag(els.blacklistAdd && els.blacklistAdd.value);
+    });
+  }
+  if (els.savedAdd) els.savedAdd.addEventListener("click", saveCurrentSearch);
 
   if (els.retry) {
     els.retry.addEventListener("click", () => {
@@ -1043,7 +1325,18 @@ function bindEvents() {
     els.viewNav.addEventListener("click", (event) => {
       const button = event.target.closest("[data-view]");
       if (!button) return;
-      setView(button.dataset.view);
+      if (button.dataset.view === "posts") goPostsRecent();
+      else {
+        setView("pools");
+        loadPools({ page: 1 });
+      }
+    });
+  }
+  if (els.subNav) {
+    els.subNav.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-sub]");
+      if (!button) return;
+      activateSub(button.dataset.sub);
     });
   }
 
@@ -1055,6 +1348,21 @@ function bindEvents() {
   }
   if (els.authSave) els.authSave.addEventListener("click", signIn);
   if (els.authClear) els.authClear.addEventListener("click", signOut);
+  if (els.authRemember) {
+    els.authRemember.addEventListener("change", () => {
+      persistAccountIfNeeded();
+      updateAuthStatus();
+      if (els.authRemember.checked) {
+        setStatus(
+          isStoragePersistent()
+            ? "This device will remember your account." + (hasBasicAuth() ? " The API key is saved on this device." : "")
+            : "Your account will be remembered until this tab closes. Storage is blocked."
+        );
+      } else {
+        setStatus("This device will not remember your account.");
+      }
+    });
+  }
 
   if (els.poolsPanel) {
     els.poolsPanel.addEventListener("submit", (event) => {
@@ -1073,28 +1381,21 @@ function bindEvents() {
 
   if (els.popularPanel) {
     els.popularPanel.addEventListener("click", (event) => {
-      const button = event.target.closest("[data-scale]");
+      const button = event.target.closest("[data-pop]");
       if (!button) return;
-      setPopularScale(button.dataset.scale);
-      loadPopular({ page: 1, append: false });
-    });
-  }
-  if (els.popularDate) {
-    els.popularDate.addEventListener("change", () => {
-      loadPopular({ page: 1, append: false });
-    });
-  }
-  if (els.popularPrev) {
-    els.popularPrev.addEventListener("click", () => {
-      const scale = state.popularScale || "day";
-      els.popularDate.value = shiftDate(els.popularDate.value || todayISO(), scale, -1);
-      loadPopular({ page: 1, append: false });
-    });
-  }
-  if (els.popularNext) {
-    els.popularNext.addEventListener("click", () => {
-      const scale = state.popularScale || "day";
-      els.popularDate.value = shiftDate(els.popularDate.value || todayISO(), scale, 1);
+      const scale = button.dataset.scale;
+      const action = button.dataset.pop;
+      if (action === "prev") {
+        state.popularScale = scale;
+        setPopularDate(scale, shiftDate(popularDate(scale), scale, -1));
+      } else if (action === "next") {
+        state.popularScale = scale;
+        setPopularDate(scale, shiftDate(popularDate(scale), scale, 1));
+      } else {
+        state.popularScale = scale;
+      }
+      syncPopularButtons();
+      updatePopularRange();
       loadPopular({ page: 1, append: false });
     });
   }
@@ -1135,20 +1436,27 @@ function bindEvents() {
 function restorePrefs() {
   const sample = getItem(SAMPLE_KEY);
   els.preferSample.checked = sample !== "0";
-  els.blacklist.value = getItem(BLACKLIST_KEY) || "";
+  state.blacklist = normalizeBlacklist(parseStoredList(getItem(BLACKLIST_KEY) || "", true));
+  state.saved = parseStoredList(getItem(SAVED_KEY) || "");
+  const today = todayISO();
+  state.popularDates = { day: today, week: today, month: today };
+  state.popularScale = "day";
   if (els.favUser) els.favUser.value = getItem(FAV_USER_KEY) || "";
   if (els.authUser) els.authUser.value = getItem(AUTH_USER_KEY) || "";
-  if (els.popularDate && !els.popularDate.value) els.popularDate.value = todayISO();
   const rememberedKey = getItem(AUTH_KEY_KEY);
-  const rememberedUser = getItem(AUTH_USER_KEY);
-  if (rememberedKey && rememberedUser && isStoragePersistent()) {
+  const rememberedUser = getItem(AUTH_USER_KEY) || getItem(FAV_USER_KEY);
+  if (els.authRemember && (rememberedUser || rememberedKey)) els.authRemember.checked = true;
+  if (rememberedKey && rememberedUser) {
     setBasicAuth(rememberedUser, rememberedKey);
     if (els.authRemember) els.authRemember.checked = true;
   }
   updateAuthStatus();
-  setView("search");
+  renderBlacklist();
+  renderSaved();
+  syncPopularButtons();
+  updatePopularRange();
 }
 
-setupGate();
 restorePrefs();
 bindEvents();
+setupGate();

@@ -85,12 +85,25 @@ async function withPage(browser, base, setupStorage, fn) {
   }
 }
 
+async function waitForCall(listFn, prev, { timeout = 20000, match } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const list = listFn();
+    if (list.length > prev) {
+      const last = list.at(-1);
+      if (!match || match(last)) return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("timed out waiting for API call");
+}
+
 async function confirmAndUseSafe(page) {
   await page.waitForSelector("#age-confirm");
   assert.equal(await page.$eval("#app", (el) => el.hidden), true);
+  await page.select("#rating", "s");
   await page.click("#age-confirm");
   await page.waitForSelector("#app:not([hidden])");
-  await page.select("#rating", "s");
 }
 
 const logs = [];
@@ -128,10 +141,21 @@ try {
     assert.equal(await page.$eval("#age-gate", (el) => el.hidden), false);
     log("PASS gate is shown and no API calls are made before confirmation");
     await confirmAndUseSafe(page);
-    await new Promise((r) => setTimeout(r, 800));
+    await page.waitForFunction(
+      () => document.querySelectorAll("#grid .thumb").length > 0 || /No posts found/i.test(document.getElementById("status").textContent),
+      { timeout: 20000 }
+    );
     const after = apiCalls.filter((url) => url.startsWith("https://e621.net/posts.json"));
-    assert.equal(after.length, 0, "Search must not auto-run after confirmation");
-    log("PASS confirmation reveals the app and does not auto-search");
+    assert.ok(after.length >= 1, "Posts view should auto-load recent posts after confirmation");
+    const tags = new URL(after[0]).searchParams.get("tags") || "";
+    assert.match(tags, /(^|\s)rating:s(\s|$)/);
+    assert.match(tags, /(^|\s)-young(\s|$)/);
+    const brand = await page.$eval(".brand", (el) => el.textContent.trim());
+    assert.equal(brand, "e621-red");
+    assert.equal(await page.$eval('[data-view="posts"]', (el) => el.getAttribute("aria-selected")), "true");
+    assert.equal(await page.$eval("#search-form", (el) => el.hidden), false);
+    assert.equal(await page.$eval("#sub-nav", (el) => el.hidden), false);
+    log("PASS confirmation reveals e621-red, defaults to Posts, and auto-loads recent safe posts");
   });
 
 
@@ -183,20 +207,21 @@ try {
       assert.equal(before.declinedHeight, 0);
       assert.ok(before.scrollH <= before.innerH + 8, `startup page too tall: ${before.scrollH}`);
       assert.equal(before.visibleAccess, false);
+      await page.select("#rating", "s");
       await page.click("#age-confirm");
       await page.waitForSelector("#app:not([hidden])");
       const after = await page.evaluate(() => {
         const gate = document.getElementById("age-gate");
         const declined = document.getElementById("age-declined");
         return {
-          scrollH: document.documentElement.scrollHeight,
-          innerH: window.innerHeight,
           gateDisplay: getComputedStyle(gate).display,
           declinedDisplay: getComputedStyle(declined).display,
           gateHeight: gate.getBoundingClientRect().height,
           declinedHeight: declined.getBoundingClientRect().height,
           visibleAccess: /access\s+(denied|declined)/i.test(document.body.innerText),
           appHidden: document.getElementById("app").hidden,
+          title: document.title,
+          brand: document.querySelector(".brand")?.textContent.trim(),
         };
       });
       assert.equal(after.gateDisplay, "none");
@@ -205,12 +230,10 @@ try {
       assert.equal(after.declinedHeight, 0);
       assert.equal(after.appHidden, false);
       assert.equal(after.visibleAccess, false);
-      assert.ok(
-        after.scrollH < after.innerH * 2,
-        `page stayed too tall after confirm: ${after.scrollH}`
-      );
+      assert.equal(after.title, "e621-red");
+      assert.equal(after.brand, "e621-red");
       const posts = apiCalls.filter((url) => url.includes("/posts.json"));
-      assert.equal(posts.length, 0, "must not auto-search after confirm");
+      assert.ok(posts.every((url) => /(^|\s)rating:s(\s|$)/.test(new URL(url).searchParams.get("tags") || "")));
       log("PASS mobile gate hides cleanly and does not leave a tall Access declined screen");
     }
   );
@@ -415,9 +438,8 @@ try {
       }));
       assert.equal(afterConfirm.gateDisplay, "none");
       assert.equal(afterConfirm.declinedDisplay, "none");
-      assert.ok(afterConfirm.scrollH < afterConfirm.innerH * 2, `layout too tall: ${afterConfirm.scrollH}`);
 
-      await page.click('[data-view="favorites"]');
+      await page.click('[data-sub="favorites"]');
       await page.waitForSelector("#favorites-panel:not([hidden])");
       await page.$eval("#fav-user", (el) => { el.value = ""; });
       await page.type("#fav-user", "bitWolfy");
@@ -459,22 +481,141 @@ try {
       }
       log(`PASS pools list and open (${poolNames.length} listed)`);
 
-      await page.click('[data-view="popular"]');
-      await page.waitForSelector("#popular-panel:not([hidden])");
+      await page.click('[data-view="posts"]');
+      await page.waitForSelector("#sub-nav:not([hidden])");
       const popularBefore = apiCalls.filter((url) => url.includes("/popular.json")).length;
-      await page.click('#popular-panel [data-scale="day"]');
+      await page.click('[data-sub="popular"]');
+      await page.waitForSelector("#popular-panel:not([hidden])");
       await page.waitForFunction(
         () => document.querySelectorAll("#grid .thumb").length > 0 || /No viewable popular posts/i.test(document.getElementById("status").textContent),
         { timeout: 20000 }
       );
-      const popularCalls = apiCalls.filter((url) => url.includes("/popular.json"));
+      let popularCalls = apiCalls.filter((url) => url.includes("/popular.json"));
       assert.ok(popularCalls.length > popularBefore, "expected a popular request");
-      const popularUrl = new URL(popularCalls.at(-1));
+      let popularUrl = new URL(popularCalls.at(-1));
       assert.equal(popularUrl.searchParams.get("scale"), "day");
       assert.ok(!popularUrl.searchParams.get("tags"));
+      const firstDate = popularUrl.searchParams.get("date");
+      const rangeText = await page.$eval("#popular-range", (el) => el.textContent);
+      assert.match(rangeText, /Day/i);
       const popularBadges = await page.$$eval("#grid .badge", (els) => els.map((el) => el.textContent));
       assert.ok(popularBadges.every((b) => b === "S"), `non-safe popular visible: ${popularBadges}`);
-      log(`PASS popular day view (${popularBadges.length} safe thumbs after client filter)`);
+
+      const nine = await page.$$eval("#popular-grid button", (els) => els.map((el) => el.textContent.trim()));
+      assert.deepEqual(nine, ["«prev", "Day", "next»", "«prev", "Week", "next»", "«prev", "Month", "next»"]);
+
+      const popularCount = apiCalls.filter((url) => url.includes("/popular.json")).length;
+      await page.click('#popular-grid [data-pop="prev"][data-scale="day"]');
+      const afterPrevUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/popular.json")),
+        popularCount,
+        { match: (url) => new URL(url).searchParams.get("scale") === "day" }
+      );
+      const afterPrev = new URL(afterPrevUrl);
+      assert.equal(afterPrev.searchParams.get("scale"), "day");
+      const prevDate = afterPrev.searchParams.get("date");
+      assert.ok(prevDate && prevDate <= firstDate, `prev should move the day back: ${firstDate} -> ${prevDate}`);
+
+      const afterPrevCount = apiCalls.filter((url) => url.includes("/popular.json")).length;
+      await page.click('#popular-grid [data-pop="scale"][data-scale="week"]');
+      const weekUrl = new URL(await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/popular.json")),
+        afterPrevCount,
+        { match: (url) => new URL(url).searchParams.get("scale") === "week" }
+      ));
+      assert.equal(weekUrl.searchParams.get("scale"), "week");
+      const weekRange = await page.$eval("#popular-range", (el) => el.textContent);
+      assert.match(weekRange, /Week/i);
+      log(`PASS popular 3x3 day/week controls (${popularBadges.length} safe thumbs after client filter)`);
+
+      const hotBefore = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      await page.click('[data-sub="hot"]');
+      await page.waitForFunction(() => /order:hot/i.test(document.getElementById("search").value), { timeout: 20000 });
+      const hotUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        hotBefore,
+        { match: (url) => /order:hot/i.test(new URL(url).searchParams.get("tags") || "") }
+      );
+      const hotTags = new URL(hotUrl).searchParams.get("tags") || "";
+      assert.match(hotTags, /order:hot/i);
+      assert.match(hotTags, /(^|\s)rating:s(\s|$)/);
+      assert.match(hotTags, /(^|\s)-young(\s|$)/);
+      log("PASS Hot puts order:hot in the search bar and query");
+
+      await page.click('[data-sub="blacklist"]');
+      await page.waitForSelector("#blacklist-panel:not([hidden])");
+      const locked = await page.$eval("#blacklist-panel", (el) => el.textContent);
+      assert.match(locked, /young/);
+      assert.match(locked, /loli/);
+      await page.$eval("#blacklist-add", (el) => { el.value = ""; });
+      await page.type("#blacklist-add", "young");
+      await page.click("#blacklist-form button[type=submit]");
+      const afterBlocked = await page.$$eval("#blacklist-list li", (els) => els.map((el) => el.textContent));
+      assert.equal(afterBlocked.some((text) => /\byoung\b/i.test(text)), false, "hard exclusion must not be a removable blacklist item");
+      await page.$eval("#blacklist-add", (el) => { el.value = ""; });
+      await page.type("#blacklist-add", "canine");
+      await page.click("#blacklist-form button[type=submit]");
+      await page.waitForFunction(() => [...document.querySelectorAll("#blacklist-list li")].some((el) => /canine/i.test(el.textContent)));
+      log("PASS blacklist adds user tags and keeps hard exclusions locked");
+
+      await page.$eval("#search", (el) => { el.value = ""; });
+      await page.type("#search", "canid order:score");
+      await page.click('[data-sub="saved"]');
+      await page.waitForSelector("#saved-panel:not([hidden])");
+      await page.click("#saved-add");
+      await page.waitForFunction(() => [...document.querySelectorAll("#saved-list li")].some((el) => /canid order:score/i.test(el.textContent)));
+      const beforeSaved = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      await page.click("#saved-list li button:not(.secondary)");
+      const savedUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        beforeSaved,
+        { match: (url) => /canid/i.test(new URL(url).searchParams.get("tags") || "") }
+      );
+      const savedTags = new URL(savedUrl).searchParams.get("tags") || "";
+      assert.match(savedTags, /canid/i);
+      assert.match(savedTags, /order:score/i);
+      assert.match(savedTags, /(^|\s)rating:s(\s|$)/);
+      assert.match(savedTags, /(^|\s)-young(\s|$)/);
+      log("PASS saved search stores and runs canid order:score");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.evaluateOnNewDocument(() => {
+        const boom = () => { throw new Error("storage blocked"); };
+        const fake = {
+          getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom,
+          get length() { throw new Error("storage blocked"); },
+        };
+        Object.defineProperty(window, "localStorage", { get: () => fake });
+      });
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.click('[data-sub="blacklist"]');
+      await page.waitForSelector("#blacklist-panel:not([hidden])");
+      const note = await page.$eval("#blacklist-storage-note", (el) => !el.hidden);
+      assert.equal(note, true);
+      await page.type("#blacklist-add", "canine");
+      await page.click("#blacklist-form button[type=submit]");
+      await page.waitForFunction(() => [...document.querySelectorAll("#blacklist-list li")].some((el) => /canine/i.test(el.textContent)));
+      await page.$eval("#search", (el) => { el.value = "canid order:score"; });
+      await page.click('[data-sub="saved"]');
+      await page.waitForSelector("#saved-panel:not([hidden])");
+      assert.equal(await page.$eval("#saved-storage-note", (el) => !el.hidden), true);
+      await page.click("#saved-add");
+      await page.waitForFunction(() => [...document.querySelectorAll("#saved-list li")].some((el) => /canid order:score/i.test(el.textContent)));
+      await page.click('[data-sub="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      assert.equal(await page.$eval("#auth-remember-note", (el) => !el.hidden), true);
+      assert.equal(await page.$eval("#auth-remember", (el) => el.disabled), false);
+      await page.click("#auth-remember");
+      assert.equal(await page.$eval("#auth-remember", (el) => el.checked), true);
+      log("PASS blocked storage still allows blacklist, saved searches, and remember-in-memory");
     }
   );
 
