@@ -212,6 +212,18 @@ export function filterPools(pools) {
   return pools.filter((pool) => pool && !nameContainsBlockedTerm(pool.name));
 }
 
+export function poolResponseHasMore(rawCount, limit, page, maxPage) {
+  return Number(rawCount) >= Number(limit) && Number(page) < Number(maxPage);
+}
+
+export function shouldFetchMorePools(rawCount, limit, visibleCount, extraFetches, maxExtra) {
+  return (
+    Number(rawCount) >= Number(limit) &&
+    Number(visibleCount) < Number(limit) &&
+    Number(extraFetches) < Number(maxExtra)
+  );
+}
+
 export function applyClientFilters(posts, { rating = "all", blacklist = [] } = {}) {
   let out = filterPosts(posts);
   if (rating && rating !== "all") {

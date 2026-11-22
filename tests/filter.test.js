@@ -17,7 +17,9 @@ import {
   isValidUsername,
   nameContainsBlockedTerm,
   poolDirectionOpen,
+  poolResponseHasMore,
   postPoolIds,
+  shouldFetchMorePools,
   sanitizeUsername,
   stepPoolIds,
   shouldExcludePost,
@@ -299,4 +301,14 @@ test("collectTagsByCategory shows every e621 tag category in the requested order
   assert.equal(formatTagCategoryLabel("species"), "Species");
   assert.equal(formatTagCategoryLabel("meta"), "Meta");
   assert.equal(formatTagCategoryLabel("lore"), "Lore");
+});
+
+test("poolResponseHasMore is based on the raw API count, not the filtered count", () => {
+  assert.equal(poolResponseHasMore(24, 24, 1, 750), true);
+  assert.equal(poolResponseHasMore(23, 24, 1, 750), false);
+  assert.equal(poolResponseHasMore(100, 100, 750, 750), false);
+  assert.equal(shouldFetchMorePools(24, 24, 23, 0, 10), true);
+  assert.equal(shouldFetchMorePools(100, 100, 100, 0, 10), false);
+  assert.equal(shouldFetchMorePools(100, 100, 90, 10, 10), false);
+  assert.equal(shouldFetchMorePools(40, 100, 39, 0, 10), false);
 });

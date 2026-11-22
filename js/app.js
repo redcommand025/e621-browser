@@ -10,21 +10,24 @@ import {
   isBlockedTag,
   isValidUsername,
   nameContainsBlockedTerm,
+  poolResponseHasMore,
   poolDirectionOpen,
+  shouldFetchMorePools,
   postPoolIds,
   stepPoolIds,
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js";
+} from "./filter.js?v=20261122e";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js";
+} from "./storage.js?v=20261122e";
 import {
   PAGE_LIMIT,
+  POOL_PAGE_LIMIT,
   basicAuthUsername,
   clearBasicAuth,
   fetchAutocomplete,
@@ -42,7 +45,7 @@ import {
   sampleImageUrl,
   setBasicAuth,
   videoSources,
-} from "./api.js";
+} from "./api.js?v=20261122e";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -55,6 +58,7 @@ const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
 const MAX_APPENDED_PAGES = 5;
 const MAX_PAGE = 750;
+const POOL_FILL_MAX_EXTRA = 10;
 
 const els = {
   gate: document.getElementById("age-gate"),
@@ -149,6 +153,8 @@ const state = {
   saved: [],
   activePool: null,
   poolIds: [],
+  pools: [],
+  pageStart: 1,
   popularScale: "day",
   popularDates: {},
   popularAll: [],
@@ -452,12 +458,7 @@ function renderGrid(reset) {
     button.addEventListener("click", () => openViewer(i));
     els.grid.append(button);
   }
-  els.pageLabel.textContent = `Page ${state.page}`;
-  els.prev.disabled = state.page <= 1 || state.loading;
-  els.next.disabled = !state.hasMore || state.loading;
-  els.more.disabled =
-    !state.hasMore || state.loading || state.appended >= MAX_APPENDED_PAGES;
-  els.more.hidden = state.appended >= MAX_APPENDED_PAGES && state.hasMore === false;
+  updatePager();
 }
 
 async function loadPage({ page, append }) {
@@ -1167,7 +1168,12 @@ function bindInfiniteScroll() {
   if (!("IntersectionObserver" in window) || !els.sentinel) return;
   const observer = new IntersectionObserver((entries) => {
     if (!entries.some((entry) => entry.isIntersecting)) return;
-    if (state.loading || !state.hasMore || state.appended >= MAX_APPENDED_PAGES) return;
+    if (state.loading || !state.hasMore || appendLimitReached()) return;
+    if (poolCatalogView()) {
+      if (!(state.pools && state.pools.length)) return;
+      reloadCurrent({ page: state.page + 1, append: true });
+      return;
+    }
     if (!state.posts.length) return;
     reloadCurrent({ page: state.page + 1, append: true });
   });
@@ -1182,20 +1188,47 @@ function abortSearch() {
   return abort;
 }
 
+function poolCatalogView() {
+  return state.view === "pools" && !state.activePool;
+}
+
+function pagerStartPage() {
+  if (poolCatalogView() && state.pageStart) return state.pageStart;
+  return state.page || 1;
+}
+
+function appendLimitReached() {
+  if (poolCatalogView()) return false;
+  return state.appended >= MAX_APPENDED_PAGES;
+}
+
+function updatePager() {
+  const start = pagerStartPage();
+  if (els.pageLabel) {
+    els.pageLabel.textContent =
+      start !== state.page && start
+        ? "Pages " + start + "–" + state.page
+        : "Page " + (state.page || 1);
+  }
+  if (els.prev) els.prev.disabled = start <= 1 || state.loading;
+  if (els.next) els.next.disabled = !state.hasMore || state.loading;
+  if (els.more) {
+    els.more.disabled = !state.hasMore || state.loading || appendLimitReached();
+    els.more.hidden = appendLimitReached() && state.hasMore === false;
+  }
+}
+
 function beginLoad(message) {
   state.loading = true;
-  els.prev.disabled = true;
-  els.next.disabled = true;
-  els.more.disabled = true;
+  if (els.prev) els.prev.disabled = true;
+  if (els.next) els.next.disabled = true;
+  if (els.more) els.more.disabled = true;
   setStatus(message || "Loading…");
 }
 
 function finishLoad() {
   state.loading = false;
-  els.prev.disabled = state.page <= 1 || state.loading;
-  els.next.disabled = !state.hasMore || state.loading;
-  els.more.disabled =
-    !state.hasMore || state.loading || state.appended >= MAX_APPENDED_PAGES;
+  updatePager();
   if (els.viewer && els.viewer.open) updateViewerNav();
 }
 
@@ -1608,11 +1641,21 @@ async function fillPoolCovers(pools) {
   }
 }
 
-function renderPoolList(pools) {
+function renderPoolList(pools, append) {
   els.grid.hidden = true;
   els.poolList.hidden = false;
-  els.poolList.innerHTML = "";
+  if (!append) els.poolList.innerHTML = "";
+  const seen = {};
+  if (append) {
+    const existing = els.poolList.querySelectorAll("[data-pool-id]");
+    for (let i = 0; i < existing.length; i++) {
+      seen[existing[i].dataset.poolId] = true;
+    }
+  }
   for (const pool of pools) {
+    if (!pool || pool.id == null) continue;
+    if (append && seen[String(pool.id)]) continue;
+    seen[String(pool.id)] = true;
     cachePool(pool);
     const button = document.createElement("button");
     button.type = "button";
@@ -1637,34 +1680,60 @@ function renderPoolList(pools) {
   }
 }
 
-async function loadPools({ page }) {
+async function loadPools({ page, append } = {}) {
   const abort = abortSearch();
-  beginLoad("Loading pools…");
+  beginLoad(append ? "Loading more pools…" : "Loading pools…");
   try {
-    const pools = filterPools(
-      await fetchPools({
-        name: (els.poolSearch && els.poolSearch.value.trim()) || "",
-        order: (els.poolOrder && els.poolOrder.value) || "updated_at",
-        page,
-        limit: PAGE_LIMIT,
+    const name = (els.poolSearch && els.poolSearch.value.trim()) || "";
+    const order = (els.poolOrder && els.poolOrder.value) || "updated_at";
+    const startPage = append ? state.page + 1 : page || 1;
+    let apiPage = startPage;
+    let visible = [];
+    let lastRaw = 0;
+    let extra = 0;
+    while (apiPage <= MAX_PAGE) {
+      const raw = await fetchPools({
+        name: name,
+        order: order,
+        page: apiPage,
+        limit: POOL_PAGE_LIMIT,
         signal: abort.signal,
-      })
-    );
+      });
+      lastRaw = (raw && raw.length) || 0;
+      visible = visible.concat(filterPools(raw));
+      if (!shouldFetchMorePools(lastRaw, POOL_PAGE_LIMIT, visible.length, extra, POOL_FILL_MAX_EXTRA)) break;
+      extra += 1;
+      apiPage += 1;
+    }
     state.activePool = null;
     state.poolIds = [];
     state.posts = [];
-    state.page = page;
-    state.appended = 0;
-    state.hasMore = pools.length >= PAGE_LIMIT && page < MAX_PAGE;
+    state.hasMore = poolResponseHasMore(lastRaw, POOL_PAGE_LIMIT, apiPage, MAX_PAGE);
+    if (append) {
+      state.pools = (state.pools || []).concat(visible);
+      state.appended += 1;
+      state.page = apiPage;
+    } else {
+      state.pools = visible;
+      state.appended = 0;
+      state.pageStart = startPage;
+      state.page = apiPage;
+    }
     if (els.poolNav) els.poolNav.hidden = true;
-    renderPoolList(pools);
-    if (!pools.length) setStatus("No pools found.", "warn");
-    else setStatus(`${pools.length} pools loaded.`);
+    renderPoolList(visible, !!append);
+    const count = (state.pools && state.pools.length) || 0;
+    const range =
+      state.pageStart && state.pageStart !== state.page
+        ? "Pages " + state.pageStart + "–" + state.page
+        : "Page " + (state.page || 1);
+    if (!count) setStatus("No pools found.", "warn");
+    else if (!state.hasMore) setStatus(count + " pools loaded. " + range + ". End of list.");
+    else setStatus(count + " pools loaded. " + range + ". More available.");
     finishLoad();
-    fillPoolCovers(pools).catch(() => {});
+    fillPoolCovers(visible).catch(function () {});
   } catch (error) {
     if (error && error.name === "AbortError") return;
-    setStatus(error.message || "Could not load pools.", "error", { retry: true });
+    setStatus((error && error.message) || "Could not load pools.", "error", { retry: true });
     finishLoad();
   }
 }
@@ -1760,7 +1829,7 @@ async function loadPopular({ page = 1, append = false } = {}) {
 function reloadCurrent({ page = 1, append = false } = {}) {
   if (state.view === "pools") {
     if (state.activePool) return loadPoolPosts({ page, append });
-    return loadPools({ page });
+    return loadPools({ page, append });
   }
   if (state.sub === "favorites") return loadFavorites({ page, append });
   if (state.sub === "popular") return loadPopular({ page, append });
@@ -1926,13 +1995,14 @@ function bindEvents() {
   }
 
   els.prev.addEventListener("click", () => {
-    if (state.page > 1) reloadCurrent({ page: state.page - 1, append: false });
+    const start = pagerStartPage();
+    if (start > 1) reloadCurrent({ page: start - 1, append: false });
   });
   els.next.addEventListener("click", () => {
     if (state.hasMore) reloadCurrent({ page: state.page + 1, append: false });
   });
   els.more.addEventListener("click", () => {
-    if (state.hasMore && state.appended < MAX_APPENDED_PAGES) {
+    if (state.hasMore && !appendLimitReached()) {
       reloadCurrent({ page: state.page + 1, append: true });
     }
   });

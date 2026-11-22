@@ -3,6 +3,7 @@ import { normalizePostsResponse } from "./filter.js";
 export const CLIENT_ID = "e621-browser/1.0 (by redcommand025 on github)";
 export const API_ORIGIN = "https://e621.net";
 export const PAGE_LIMIT = 24;
+export const POOL_PAGE_LIMIT = 100;
 export const MIN_REQUEST_INTERVAL_MS = 800;
 
 let chain = Promise.resolve();

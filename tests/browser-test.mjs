@@ -123,6 +123,11 @@ async function blockStorageAndPhone(page) {
   });
 }
 
+async function clickSelector(page, selector) {
+  await page.$eval(selector, (el) => el.scrollIntoView({ block: "center", inline: "nearest" }));
+  await page.evaluate((sel) => document.querySelector(sel).click(), selector);
+}
+
 async function confirmAndUseSafe(page) {
   await page.waitForSelector("#age-confirm");
   assert.equal(await page.$eval("#app", (el) => el.hidden), true);
@@ -1386,6 +1391,124 @@ try {
         } }
       );
       log("PASS tapping e621-red in the viewer closes it and loads recent posts");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.click('[data-view="pools"]');
+      await page.waitForSelector("#pools-panel:not([hidden])");
+      await page.waitForFunction(() => document.querySelectorAll("#pool-list .pool-item").length > 0, { timeout: 30000 });
+      const first = await page.evaluate(() => ({
+        count: document.querySelectorAll("#pool-list .pool-item").length,
+        status: (document.getElementById("status") || {}).textContent || "",
+        pageLabel: (document.getElementById("page-label") || {}).textContent || "",
+        moreDisabled: document.getElementById("more").disabled,
+        nextDisabled: document.getElementById("next").disabled,
+      }));
+      assert.ok(first.count > 23, "expected more than 23 pools, got " + first.count);
+      const poolUrls = apiCalls.filter((url) => url.includes("/pools.json"));
+      assert.ok(poolUrls.length >= 1, "expected a pools request");
+      const lastList = poolUrls.filter((url) => !new URL(url).searchParams.get("search[id]")).at(-1);
+      const limit = Number(new URL(lastList).searchParams.get("limit") || 0);
+      assert.ok(limit >= 75, "expected a larger pool page, got limit=" + limit);
+      assert.match(first.status, /pools loaded/i);
+      assert.match(first.status, /more available|end of list/i);
+      assert.match(first.pageLabel, /Page/);
+      if (!first.moreDisabled || !first.nextDisabled) {
+        const before = first.count;
+        if (!first.moreDisabled) await clickSelector(page, "#more");
+        else await clickSelector(page, "#next");
+        await page.waitForFunction(
+          (prev) => {
+            const count = document.querySelectorAll("#pool-list .pool-item").length;
+            const status = (document.getElementById("status") || {}).textContent || "";
+            return !/Loading/i.test(status) && (count > prev || /page/i.test(status));
+          },
+          { timeout: 30000 },
+          before
+        );
+        const after = await page.evaluate(() => ({
+          count: document.querySelectorAll("#pool-list .pool-item").length,
+          status: (document.getElementById("status") || {}).textContent || "",
+          pageLabel: (document.getElementById("page-label") || {}).textContent || "",
+        }));
+        if (!first.moreDisabled) {
+          assert.ok(after.count > before, "Load more should append pools (" + before + " -> " + after.count + ")");
+        } else {
+          assert.ok(after.count > 23, "Next should show another page of pools");
+        }
+        if (!first.moreDisabled && !after.status.match(/end of list/i)) {
+          const mid = after.count;
+          await clickSelector(page, "#more");
+          await page.waitForFunction(
+            (prev) => {
+              const count = document.querySelectorAll("#pool-list .pool-item").length;
+              const status = (document.getElementById("status") || {}).textContent || "";
+              return !/Loading/i.test(status) && count > prev;
+            },
+            { timeout: 30000 },
+            mid
+          );
+          const third = await page.$$eval("#pool-list .pool-item", (els) => els.length);
+          assert.ok(third > mid, "paging a third page should add more pools");
+          log("PASS default pools load " + first.count + ", then " + after.count + ", then " + third);
+        } else {
+          log("PASS default pools load " + first.count + " and continue to " + after.count);
+        }
+      } else {
+        assert.match(first.status, /end of list/i);
+        log("PASS default pools load " + first.count + " and reached the end of the list");
+      }
+
+      await page.$eval("#pool-search", (el) => { el.value = ""; });
+      await page.type("#pool-search", "official");
+      await clickSelector(page, "#pool-load");
+      await page.waitForFunction(
+        () => {
+          const status = (document.getElementById("status") || {}).textContent || "";
+          return !/Loading/i.test(status) && document.querySelectorAll("#pool-list .pool-item").length > 0;
+        },
+        { timeout: 30000 }
+      );
+      const named = await page.evaluate(() => ({
+        count: document.querySelectorAll("#pool-list .pool-item").length,
+        status: (document.getElementById("status") || {}).textContent || "",
+        moreDisabled: document.getElementById("more").disabled,
+        names: [...document.querySelectorAll("#pool-list .pool-item strong")].slice(0, 8).map((el) => (el.textContent || "").toLowerCase()),
+      }));
+      assert.ok(named.count > 0, "expected name search results");
+      for (const name of named.names) {
+        assert.match(name, /official/);
+        for (const tag of ["young", "loli", "shota", "cub"]) {
+          assert.equal(name.split(/\s+/).includes(tag), false, "blocked pool listed: " + name);
+        }
+      }
+      if (!named.moreDisabled) {
+        const beforeNamed = named.count;
+        await clickSelector(page, "#more");
+        await page.waitForFunction(
+          (prev) => {
+            const count = document.querySelectorAll("#pool-list .pool-item").length;
+            const status = (document.getElementById("status") || {}).textContent || "";
+            return !/Loading/i.test(status) && count > prev;
+          },
+          { timeout: 30000 },
+          beforeNamed
+        );
+        const afterNamed = await page.$$eval("#pool-list .pool-item", (els) => els.length);
+        assert.ok(afterNamed > beforeNamed, "name search Load more should append");
+        log("PASS pool name search paging (" + beforeNamed + " -> " + afterNamed + ")");
+      } else {
+        log("PASS pool name search loaded " + named.count + " (single page)");
+      }
     }
   );
 
