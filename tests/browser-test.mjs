@@ -1720,6 +1720,151 @@ try {
     }
   );
 
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      await page.click('[data-sub="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      await page.$eval("#fav-user", (el) => {
+        el.value = "bitWolfy";
+      });
+      await page.$eval("#auth-details", (el) => {
+        el.open = true;
+      });
+      await page.$eval("#auth-key", (el) => {
+        el.value = "not-a-real-key-000";
+      });
+      await clickSelector(page, "#auth-save");
+      await page.waitForFunction(() => {
+        const status = (document.getElementById("auth-status") || {}).textContent || "";
+        const pageStatus = (document.getElementById("status") || {}).textContent || "";
+        return /rejected the username or API key/i.test(status + " " + pageStatus);
+      }, { timeout: 25000 });
+      const rejected = await page.evaluate(() => ({
+        status: (document.getElementById("auth-status") || {}).textContent.trim(),
+        kind: (document.getElementById("auth-status") || {}).getAttribute("data-kind"),
+        signedHidden: document.getElementById("auth-signed").hidden,
+        signOutDisabled: document.getElementById("auth-clear").disabled,
+        summary: (document.querySelector("#auth-details summary") || {}).textContent.trim(),
+      }));
+      assert.match(rejected.status, /rejected the username or API key/i);
+      assert.equal(rejected.kind, "error");
+      assert.equal(rejected.signedHidden, true);
+      assert.equal(rejected.signOutDisabled, true);
+      assert.equal(rejected.summary, "Optional API key");
+      log("PASS fake API key is rejected with a clear 401 message");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+      await page.setRequestInterception(true);
+      page.on("request", (request) => {
+        const url = request.url();
+        if (/^https:\/\/e621\.net\/users\/mock_user\.json/.test(url)) {
+          if (request.method() === "OPTIONS") {
+            request.respond({
+              status: 204,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "authorization, accept",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+              },
+              body: "",
+            });
+            return;
+          }
+          const auth = request.headers().authorization || "";
+          if (auth.indexOf("Basic ") !== 0) {
+            request.respond({
+              status: 401,
+              contentType: "application/json",
+              headers: { "Access-Control-Allow-Origin": "*" },
+              body: JSON.stringify({ success: false, message: "SessionLoader::AuthenticationFailure" }),
+            });
+            return;
+          }
+          request.respond({
+            status: 200,
+            contentType: "application/json",
+            headers: { "Access-Control-Allow-Origin": "*" },
+            body: JSON.stringify({ name: "mock_user", id: 42 }),
+          });
+          return;
+        }
+        request.continue();
+      });
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await page.click('[data-sub="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      await page.$eval("#fav-user", (el) => {
+        el.value = "mock_user";
+      });
+      await page.$eval("#auth-details", (el) => {
+        el.open = true;
+      });
+      await page.$eval("#auth-key", (el) => {
+        el.value = "good-key-for-mock";
+      });
+      await page.click("#auth-remember");
+      await clickSelector(page, "#auth-save");
+      await page.waitForFunction(() => {
+        const signed = document.getElementById("auth-signed");
+        return signed && !signed.hidden && /Signed in as mock_user/.test(signed.textContent);
+      }, { timeout: 20000 });
+      const signed = await page.evaluate(() => ({
+        badge: (document.getElementById("auth-signed") || {}).textContent.trim(),
+        status: (document.getElementById("auth-status") || {}).textContent.trim(),
+        kind: (document.getElementById("auth-status") || {}).getAttribute("data-kind"),
+        summary: (document.querySelector("#auth-details summary") || {}).textContent.trim(),
+        signOutDisabled: document.getElementById("auth-clear").disabled,
+        keyCleared: document.getElementById("auth-key").value === "",
+        remember: document.getElementById("auth-remember").checked,
+        rememberNote: !document.getElementById("auth-remember-note").hidden,
+      }));
+      assert.equal(signed.badge, "Signed in as mock_user");
+      assert.match(signed.status, /Signed in as mock_user/);
+      assert.match(signed.status, /until this tab closes/);
+      assert.equal(signed.kind, "ok");
+      assert.equal(signed.summary, "Signed in as mock_user");
+      assert.equal(signed.signOutDisabled, false);
+      assert.equal(signed.keyCleared, true);
+      assert.equal(signed.remember, true);
+      assert.equal(signed.rememberNote, true);
+      await page.click('[data-sub="hot"]');
+      await page.waitForSelector("#favorites-panel[hidden]");
+      await page.click('[data-sub="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      const still = await page.evaluate(() => ({
+        badge: (document.getElementById("auth-signed") || {}).textContent.trim(),
+        hidden: document.getElementById("auth-signed").hidden,
+        pageStatus: (document.getElementById("status") || {}).textContent.trim(),
+      }));
+      assert.equal(still.hidden, false);
+      assert.equal(still.badge, "Signed in as mock_user");
+      assert.match(still.pageStatus, /Signed in as mock_user/);
+      await clickSelector(page, "#auth-clear");
+      await page.waitForFunction(() => document.getElementById("auth-signed").hidden, { timeout: 5000 });
+      assert.equal(await page.$eval("#auth-clear", (el) => el.disabled), true);
+      log("PASS mocked sign-in shows Signed in as X, survives view changes with blocked storage, and signs out");
+    }
+  );
+
   log("All browser tests passed.");
 } catch (error) {
   failures = 1;

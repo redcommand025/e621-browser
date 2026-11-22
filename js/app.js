@@ -22,13 +22,13 @@ import {
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js?v=20261122g";
+} from "./filter.js?v=20261122h";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261122g";
+} from "./storage.js?v=20261122h";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -48,8 +48,9 @@ import {
   previewUrl,
   sampleImageUrl,
   setBasicAuth,
+  verifyBasicAuth,
   videoSources,
-} from "./api.js?v=20261122g";
+} from "./api.js?v=20261122h";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -128,6 +129,8 @@ const els = {
   authSave: document.getElementById("auth-save"),
   authClear: document.getElementById("auth-clear"),
   authStatus: document.getElementById("auth-status"),
+  authSigned: document.getElementById("auth-signed"),
+  authDetails: document.getElementById("auth-details"),
   poolsPanel: document.getElementById("pools-panel"),
   poolSearch: document.getElementById("pool-search"),
   poolOrder: document.getElementById("pool-order"),
@@ -290,6 +293,7 @@ function openApp() {
   }
   return Promise.resolve()
     .then(function () {
+      restoreRememberedAuth();
       return goPostsRecent();
     })
     .catch(function (error) {
@@ -1683,7 +1687,12 @@ function activateSub(sub) {
     return loadPopular({ page: 1, append: false });
   }
   if (sub === "favorites") {
-    setStatus("Enter an e621 username to load favorites.");
+    updateAuthStatus();
+    if (hasBasicAuth()) {
+      setStatus("Signed in as " + basicAuthUsername() + ".");
+    } else {
+      setStatus("Enter an e621 username to load favorites.");
+    }
     return;
   }
   if (sub === "blacklist") {
@@ -1728,14 +1737,42 @@ function syncPopularButtons() {
   }
 }
 
-function updateAuthStatus() {
-  if (!els.authStatus) return;
+function resolvedAuthUsername() {
+  const fromAuth = sanitizeUsername(els.authUser && els.authUser.value);
+  if (isValidUsername(fromAuth)) return fromAuth;
+  return sanitizeUsername(els.favUser && els.favUser.value);
+}
+
+function signedInNote() {
   const remember = Boolean(els.authRemember && els.authRemember.checked);
-  if (hasBasicAuth()) {
-    els.authStatus.textContent = `Signed in as ${basicAuthUsername()}. The API key stays in this tab` + (remember && isStoragePersistent() ? " and on this device." : " only.");
-  } else {
-    els.authStatus.textContent = "Not signed in. Public favorites still work.";
+  const extra = remember
+    ? (isStoragePersistent() ? " The API key is saved on this device." : " Storage is blocked, so the API key is remembered only until this tab closes.")
+    : " The API key stays in this tab only.";
+  return "Signed in as " + basicAuthUsername() + "." + extra;
+}
+
+function updateAuthStatus(message, kind) {
+  const signed = hasBasicAuth();
+  const name = basicAuthUsername();
+  if (els.authStatus) {
+    if (message) els.authStatus.textContent = message;
+    else if (signed) els.authStatus.textContent = signedInNote();
+    else els.authStatus.textContent = "Not signed in. Public favorites still work.";
+    if (kind) els.authStatus.setAttribute("data-kind", kind);
+    else if (message) els.authStatus.removeAttribute("data-kind");
+    else els.authStatus.setAttribute("data-kind", signed ? "ok" : "");
   }
+  if (els.authSigned) {
+    els.authSigned.hidden = !signed;
+    els.authSigned.textContent = signed ? "Signed in as " + name : "";
+  }
+  if (els.authDetails) {
+    const summary = els.authDetails.querySelector("summary");
+    if (summary) summary.textContent = signed ? "Signed in as " + name : "Optional API key";
+    if (signed) els.authDetails.open = true;
+  }
+  if (els.authClear) els.authClear.disabled = !signed;
+  if (els.authSave) els.authSave.disabled = Boolean(state.authBusy);
   if (els.authRememberNote) {
     els.authRememberNote.hidden = isStoragePersistent();
   }
@@ -1745,30 +1782,59 @@ function removeAuthKey() {
   removeItem(AUTH_KEY_KEY);
 }
 
+function restoreRememberedAuth() {
+  const pending = state.pendingAuth;
+  state.pendingAuth = null;
+  if (!pending || !pending.username || !pending.apiKey) return;
+  if (els.authKey && !els.authKey.value) els.authKey.value = pending.apiKey;
+  if (els.authUser && !els.authUser.value) els.authUser.value = pending.username;
+  signIn();
+}
+
 function signIn() {
-  const username = sanitizeUsername(els.authUser.value);
-  const apiKey = (els.authKey.value || "").trim();
-  if (!isValidUsername(username) || !apiKey) {
-    setStatus("Enter a username and API key to sign in.", "error");
-    return;
+  if (state.authBusy) return Promise.resolve();
+  const username = resolvedAuthUsername();
+  const apiKey = (els.authKey && els.authKey.value) || "";
+  if (!isValidUsername(username) || !apiKey.replace(/\s+/g, "")) {
+    const message = "Enter a username and API key to sign in.";
+    updateAuthStatus(message, "error");
+    setStatus(message, "error");
+    return Promise.resolve();
   }
-  const remember = Boolean(els.authRemember && els.authRemember.checked);
-  setBasicAuth(username, apiKey);
-  if (remember) {
-    setItem(AUTH_USER_KEY, username);
-    setItem(AUTH_KEY_KEY, apiKey);
-    if (els.favUser && !els.favUser.value) els.favUser.value = username;
-    persistAccountIfNeeded();
-  } else {
-    removeAuthKey();
-  }
-  els.authKey.value = "";
-  if (els.favUser && !els.favUser.value) els.favUser.value = username;
-  updateAuthStatus();
-  const keyNote = remember
-    ? (isStoragePersistent() ? " The API key is saved on this device." : " Storage is blocked, so the API key is remembered only until this tab closes.")
-    : "";
-  setStatus("Signed in. Private favorites will use this API key." + keyNote);
+  if (els.authUser && !sanitizeUsername(els.authUser.value)) els.authUser.value = username;
+  if (els.favUser && !sanitizeUsername(els.favUser.value)) els.favUser.value = username;
+  state.authBusy = true;
+  updateAuthStatus("Checking the API key with e621…", "");
+  setStatus("Checking the API key with e621…");
+  if (els.authSave) els.authSave.disabled = true;
+  return verifyBasicAuth(username, apiKey)
+    .then(function (user) {
+      const shown = sanitizeUsername((user && user.name) || username) || username;
+      if (els.authUser) els.authUser.value = shown;
+      if (els.favUser && !sanitizeUsername(els.favUser.value)) els.favUser.value = shown;
+      setBasicAuth(shown, apiKey);
+      const remember = Boolean(els.authRemember && els.authRemember.checked);
+      if (remember) {
+        setItem(AUTH_USER_KEY, shown);
+        setItem(AUTH_KEY_KEY, apiKey.replace(/\s+/g, ""));
+        persistAccountIfNeeded();
+      } else {
+        removeAuthKey();
+      }
+      if (els.authKey) els.authKey.value = "";
+      updateAuthStatus(signedInNote(), "ok");
+      setStatus(signedInNote());
+    })
+    .catch(function (error) {
+      if (error && error.name === "AbortError") return;
+      const message = (error && error.message) || "Could not sign in.";
+      updateAuthStatus(message, "error");
+      setStatus(message, "error");
+    })
+    .then(function () {
+      state.authBusy = false;
+      if (els.authSave) els.authSave.disabled = false;
+    });
 }
 
 function signOut() {
@@ -2249,8 +2315,9 @@ function restorePrefs() {
   const rememberedUser = getItem(AUTH_USER_KEY) || getItem(FAV_USER_KEY);
   if (els.authRemember && (rememberedUser || rememberedKey)) els.authRemember.checked = true;
   if (rememberedKey && rememberedUser) {
-    setBasicAuth(rememberedUser, rememberedKey);
     if (els.authRemember) els.authRemember.checked = true;
+    if (els.authKey && !els.authKey.value) els.authKey.value = rememberedKey;
+    state.pendingAuth = { username: rememberedUser, apiKey: rememberedKey };
   }
   updateAuthStatus();
   renderBlacklist();

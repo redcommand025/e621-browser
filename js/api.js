@@ -10,9 +10,40 @@ let chain = Promise.resolve();
 let lastRequestAt = 0;
 let basicAuth = null;
 
+export function normalizeApiKey(value) {
+  return String(value || "").replace(/\s+/g, "");
+}
+
+export function encodeBasicAuth(username, apiKey) {
+  const user = String(username || "").trim();
+  const key = normalizeApiKey(apiKey);
+  if (!user || !key) {
+    const error = new Error("Enter a username and API key to sign in.");
+    error.code = "missing";
+    throw error;
+  }
+  const raw = user + ":" + key;
+  let binary = "";
+  let latin1 = true;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw.charCodeAt(i) > 255) {
+      latin1 = false;
+      break;
+    }
+    binary += raw.charAt(i);
+  }
+  try {
+    return "Basic " + btoa(latin1 ? binary : unescape(encodeURIComponent(raw)));
+  } catch (error) {
+    const err = new Error("Could not encode the username or API key.");
+    err.code = "encode";
+    throw err;
+  }
+}
+
 export function setBasicAuth(username, apiKey) {
   const user = String(username || "").trim();
-  const key = String(apiKey || "");
+  const key = normalizeApiKey(apiKey);
   basicAuth = user && key ? { username: user, apiKey: key } : null;
 }
 
@@ -31,13 +62,17 @@ export function basicAuthUsername() {
 function requestHeaders() {
   const headers = { Accept: "application/json" };
   if (hasBasicAuth()) {
-    try {
-      headers.Authorization = `Basic ${btoa(`${basicAuth.username}:${basicAuth.apiKey}`)}`;
-    } catch {
-      /* ignore encoding errors; the request will proceed unauthenticated */
-    }
+    headers.Authorization = encodeBasicAuth(basicAuth.username, basicAuth.apiKey);
   }
   return headers;
+}
+
+function isAuthFailureMessage(msg) {
+  return /AuthenticationFailure|SessionLoader::/i.test(String(msg || ""));
+}
+
+function looksLikeApiAccessDisabled(msg) {
+  return /api access/i.test(String(msg || ""));
 }
 
 export function buildApiUrl(path, params = {}) {
@@ -80,17 +115,23 @@ export function describeApiFailure(status, contentType, bodyText) {
       const body = JSON.parse(raw);
       const msg = body && (body.message || body.reason || body.error);
       if (typeof msg === "string" && msg.trim() && !/[<>]/.test(msg)) {
+        if (status === 401 || isAuthFailureMessage(msg)) {
+          return "e621 rejected the username or API key.";
+        }
+        if (status === 403 && looksLikeApiAccessDisabled(msg)) {
+          return "API access may be disabled for this account. Enable it in e621 under Account, then Manage API Access.";
+        }
         return msg.trim();
       }
-    } catch {
+    } catch (error) {
       /* ignore invalid JSON */
     }
   }
   if (status === 401) {
-    return "Sign-in failed. Check the username and API key.";
+    return "e621 rejected the username or API key.";
   }
   if (status === 403) {
-    return "e621 denied the request (403). Wait a moment and try again.";
+    return "e621 denied the request (403). Enable API access in e621 under Account, then Manage API Access, or wait and try again.";
   }
   if (status === 429 || status === 503) {
     return "e621 is rate-limiting requests. Wait a moment and try again.";
@@ -118,18 +159,63 @@ async function parseResponse(response) {
   }
 }
 
+async function fetchWithAuth(url, headers, signal, fetchImpl) {
+  const doFetch = fetchImpl || fetch;
+  try {
+    return await doFetch(url, { signal: signal, headers: headers, mode: "cors" });
+  } catch (error) {
+    if (error && error.name === "AbortError") throw error;
+    const err = new Error("Could not reach e621. This may be a network or CORS block.");
+    err.code = "network";
+    throw err;
+  }
+}
+
 export function fetchJson(path, params = {}, { signal } = {}) {
   return enqueueRequest(async () => {
     const url = buildApiUrl(path, params);
     const headers = requestHeaders();
-    let response = await fetch(url, { signal, headers });
+    let response = await fetchWithAuth(url, headers, signal);
     if (response.status === 503) {
       await wait(1500);
       lastRequestAt = Date.now();
-      response = await fetch(url, { signal, headers });
+      response = await fetchWithAuth(url, headers, signal);
     }
     return parseResponse(response);
   });
+}
+
+export async function verifyBasicAuth(username, apiKey, { signal, fetchImpl } = {}) {
+  const user = String(username || "").trim();
+  const key = normalizeApiKey(apiKey);
+  const header = encodeBasicAuth(user, key);
+  const path = "/users/" + encodeURIComponent(user) + ".json";
+  const run = async function () {
+    const url = buildApiUrl(path);
+    const headers = { Accept: "application/json", Authorization: header };
+    const response = await fetchWithAuth(url, headers, signal, fetchImpl);
+    if (response.status === 401) {
+      const err = new Error("e621 rejected the username or API key.");
+      err.status = 401;
+      err.code = "rejected";
+      throw err;
+    }
+    if (response.status === 403) {
+      const type = response.headers && response.headers.get ? response.headers.get("content-type") : "";
+      const text = await response.text();
+      const err = new Error(
+        looksLikeApiAccessDisabled(text)
+          ? "API access may be disabled for this account. Enable it in e621 under Account, then Manage API Access."
+          : describeApiFailure(403, type, text)
+      );
+      err.status = 403;
+      err.code = "forbidden";
+      throw err;
+    }
+    return parseResponse(response);
+  };
+  if (fetchImpl) return run();
+  return enqueueRequest(run);
 }
 
 export async function fetchPosts({ tags, page = 1, limit = PAGE_LIMIT, signal } = {}) {

@@ -12,7 +12,7 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Posts sub-bar: Hot, Popular, Favorites, Blacklist, and Saved
 - Hot puts `order:hot` in the search bar and runs it
 - Popular: today's popular posts, with a 3×3 control grid (`«prev` / Day, Week, or Month / `next»`) to change the scale and move the date
-- Favorites: look up public favorites with an e621 username (`fav:username`). Optional sign-in with a username and API key for private favorites. A "Remember my account" checkbox saves the username (and the API key, if you signed in) on this device when storage works
+- Favorites: look up public favorites with an e621 username (`fav:username`). Optional sign-in with a username and API key for private favorites. Sign-in checks the key with e621 and shows Signed in as your name, or a clear error if the key is rejected, API access is disabled, or the request is blocked. A "Remember my account" checkbox saves the username (and the API key, if you signed in) on this device when storage works
 - Pools: search pools, then open one to browse its posts in pool order
 - Blacklist: add and remove your own tags. Hard-exclusion tags are always applied and are not listed as removable
 - Saved searches: store a query such as `canid order:score`, run it later, or delete it

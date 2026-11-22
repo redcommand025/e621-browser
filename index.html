@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261122g" />
+    <link rel="stylesheet" href="css/styles.css?v=20261122h" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -116,18 +116,19 @@
             Remember my account
           </label>
           <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
-          <p class="muted tight">If you also enter an API key and check remember, that key is saved on this device.</p>
+          <p id="auth-signed" class="auth-signed" hidden></p>
           <details id="auth-details">
             <summary>Optional API key</summary>
+            <p class="muted tight">Leave this username blank to use the one above. Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled.</p>
             <label for="auth-user">Username</label>
             <input id="auth-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" />
             <label for="auth-key">API key</label>
             <input id="auth-key" type="password" autocomplete="off" spellcheck="false" />
             <div class="inline-row">
               <button id="auth-save" type="button">Sign in</button>
-              <button id="auth-clear" type="button" class="secondary">Sign out</button>
+              <button id="auth-clear" type="button" class="secondary" disabled>Sign out</button>
             </div>
-            <p id="auth-status" class="muted tight"></p>
+            <p id="auth-status" class="muted tight">Not signed in. Public favorites still work.</p>
           </details>
         </form>
 
@@ -240,6 +241,6 @@
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261122g"></script>
+    <script type="module" src="js/app.js?v=20261122h"></script>
   </body>
 </html>

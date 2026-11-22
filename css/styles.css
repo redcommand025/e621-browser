@@ -209,6 +209,24 @@ select {
   align-items: center;
 }
 
+.auth-signed {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #1a3a1a;
+  color: #c6f0c6;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+#auth-status[data-kind="error"] {
+  color: #f3b4b4;
+}
+
+#auth-status[data-kind="ok"] {
+  color: #c6f0c6;
+}
+
 .pool-list {
   display: grid;
   gap: 8px;
