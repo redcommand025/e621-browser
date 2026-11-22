@@ -725,11 +725,17 @@ try {
         const views = document.querySelector('.views button');
         const sub = document.querySelector('.sub-bar button');
         const chrome = document.querySelector(".chrome");
+        const brand = document.getElementById("brand-home");
         const banner = document.getElementById("storage-banner");
         const fr = first.getBoundingClientRect();
+        const chromeBox = chrome.getBoundingClientRect();
         return {
           innerH: window.innerHeight,
-          chromeH: Math.round(chrome.getBoundingClientRect().height),
+          chromeH: Math.round(chromeBox.height),
+          chromeTop: Math.round(chromeBox.top),
+          brandInChrome: chrome.contains(brand),
+          brandText: brand && brand.textContent.trim(),
+          brandTag: brand && brand.tagName,
           topH: Math.round(document.querySelector(".top").getBoundingClientRect().height),
           bannerH: Math.round(banner.getBoundingClientRect().height),
           bannerHidden: banner.hidden,
@@ -739,7 +745,11 @@ try {
           subH: Math.round(getComputedStyle(sub).minHeight.replace("px", "")),
         };
       });
+      assert.equal(layout.brandInChrome, true);
+      assert.equal(layout.brandText, "e621-red");
+      assert.equal(layout.brandTag, "BUTTON");
       assert.ok(layout.firstVisible >= 80, `first post not visible under header: ${JSON.stringify(layout)}`);
+      assert.ok(layout.chromeH <= 200, `sticky chrome including title too tall: ${JSON.stringify(layout)}`);
       assert.ok(layout.chromeH < layout.innerH * 0.5, `sticky chrome too tall: ${JSON.stringify(layout)}`);
       assert.ok(layout.viewH <= 36 && layout.viewH >= 28, `views button height ${layout.viewH}`);
       assert.ok(layout.subH <= 36 && layout.subH >= 28, `sub-bar button height ${layout.subH}`);
@@ -964,6 +974,161 @@ try {
     }
   );
 
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+      await page.evaluateOnNewDocument(() => {
+        const boom = () => { throw new Error("storage blocked"); };
+        const fake = {
+          getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom,
+          get length() { throw new Error("storage blocked"); },
+        };
+        Object.defineProperty(window, "localStorage", { get: () => fake });
+      });
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+
+      async function brandVisible() {
+        return page.evaluate(() => {
+          const brand = document.getElementById("brand-home");
+          if (!brand) return { ok: false, reason: "missing" };
+          const box = brand.getBoundingClientRect();
+          const cs = getComputedStyle(brand);
+          return {
+            ok: box.height > 0 && box.bottom > 0 && box.top < window.innerHeight && cs.display !== "none" && cs.visibility !== "hidden",
+            text: brand.textContent.trim(),
+            tag: brand.tagName,
+            top: Math.round(box.top),
+            label: brand.getAttribute("aria-label") || "",
+          };
+        });
+      }
+
+      const views = [
+        { name: "posts", click: null },
+        { name: "popular", click: '[data-sub="popular"]', wait: "#popular-panel:not([hidden])" },
+        { name: "favorites", click: '[data-sub="favorites"]', wait: "#favorites-panel:not([hidden])" },
+        { name: "blacklist", click: '[data-sub="blacklist"]', wait: "#blacklist-panel:not([hidden])" },
+        { name: "saved", click: '[data-sub="saved"]', wait: "#saved-panel:not([hidden])" },
+        { name: "pools", click: '[data-view="pools"]', wait: "#pools-panel:not([hidden])" },
+      ];
+      for (const view of views) {
+        if (view.click) {
+          await page.click(view.click);
+          if (view.wait) await page.waitForSelector(view.wait);
+        }
+        const info = await brandVisible();
+        assert.equal(info.ok, true, "e621-red missing on " + view.name + ": " + JSON.stringify(info));
+        assert.equal(info.text, "e621-red");
+        assert.equal(info.tag, "BUTTON");
+        assert.match(info.label, /recent posts/i);
+      }
+      log("PASS e621-red stays visible as a button on Posts, Popular, Favorites, Blacklist, Saved, and Pools");
+
+      await page.click('[data-view="posts"]');
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await page.evaluate(() => window.scrollTo(0, 800));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const afterScroll = await page.evaluate(() => {
+        const brand = document.getElementById("brand-home");
+        const chrome = document.querySelector(".chrome");
+        const brandBox = brand.getBoundingClientRect();
+        const chromeBox = chrome.getBoundingClientRect();
+        return {
+          brandTop: Math.round(brandBox.top),
+          chromeTop: Math.round(chromeBox.top),
+          visible: brandBox.bottom > 0 && brandBox.top < 80,
+        };
+      });
+      assert.equal(afterScroll.visible, true, "title should stay sticky while scrolling: " + JSON.stringify(afterScroll));
+      log("PASS e621-red stays in the sticky header while scrolling");
+
+      await page.$eval("#search", (el) => { el.value = "canine"; });
+      const beforeHome = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      await page.click("#brand-home");
+      await page.waitForFunction(() => document.getElementById("search").value === "", { timeout: 10000 });
+      const afterHome = await page.evaluate(() => ({
+        search: document.getElementById("search").value,
+        postsSelected: document.querySelector('[data-view="posts"]').getAttribute("aria-selected"),
+        subHiddenSelected: [...document.querySelectorAll("#sub-nav [data-sub]")].every((el) => el.getAttribute("aria-selected") === "false"),
+        viewerOpen: Boolean(document.getElementById("viewer").open),
+      }));
+      assert.equal(afterHome.search, "");
+      assert.equal(afterHome.postsSelected, "true");
+      assert.equal(afterHome.subHiddenSelected, true);
+      assert.equal(afterHome.viewerOpen, false);
+      const homeUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        beforeHome,
+        { match: (url) => {
+          const tags = new URL(url).searchParams.get("tags") || "";
+          return /(^|\s)rating:s(\s|$)/.test(tags) && !/(^|\s)canine(\s|$)/.test(tags);
+        } }
+      );
+      const homeTags = new URL(homeUrl).searchParams.get("tags") || "";
+      assert.match(homeTags, /(^|\s)-young(\s|$)/);
+      log("PASS tapping e621-red clears the search and loads recent posts");
+
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      const inViewer = await page.evaluate(() => {
+        const brand = document.getElementById("viewer-brand-home");
+        const context = document.querySelector(".viewer-context");
+        const stage = document.getElementById("viewer-stage");
+        const media = document.querySelector("#viewer-stage img, #viewer-stage video");
+        const brandBox = brand.getBoundingClientRect();
+        const contextBox = context.getBoundingClientRect();
+        const stageBox = stage.getBoundingClientRect();
+        const mediaBox = media ? media.getBoundingClientRect() : stageBox;
+        return {
+          text: brand && brand.textContent.trim(),
+          tag: brand && brand.tagName,
+          brandBottom: Math.round(brandBox.bottom),
+          contextTop: Math.round(contextBox.top),
+          stageTop: Math.round(stageBox.top),
+          mediaTop: Math.round(mediaBox.top),
+          coversMedia: brandBox.bottom > mediaBox.top + 1,
+        };
+      });
+      assert.equal(inViewer.text, "e621-red");
+      assert.equal(inViewer.tag, "BUTTON");
+      assert.ok(inViewer.brandBottom <= inViewer.contextTop + 1, "title should sit above the Prev/Search/Next bar: " + JSON.stringify(inViewer));
+      assert.ok(inViewer.brandBottom <= inViewer.stageTop + 1, "title should not overlap the media stage: " + JSON.stringify(inViewer));
+      assert.equal(inViewer.coversMedia, false, "title covers media: " + JSON.stringify(inViewer));
+      log("PASS viewer shows e621-red above the post bar without covering the media");
+
+      await page.$eval("#search", (el) => { el.value = "canine"; });
+      const beforeViewerHome = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      await page.click("#viewer-brand-home");
+      await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+      const afterViewerHome = await page.evaluate(() => ({
+        search: document.getElementById("search").value,
+        postsSelected: document.querySelector('[data-view="posts"]').getAttribute("aria-selected"),
+        viewerOpen: Boolean(document.getElementById("viewer").open),
+      }));
+      assert.equal(afterViewerHome.viewerOpen, false);
+      assert.equal(afterViewerHome.search, "");
+      assert.equal(afterViewerHome.postsSelected, "true");
+      await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        beforeViewerHome,
+        { match: (url) => {
+          const tags = new URL(url).searchParams.get("tags") || "";
+          return /(^|\s)rating:s(\s|$)/.test(tags) && !/(^|\s)canine(\s|$)/.test(tags);
+        } }
+      );
+      log("PASS tapping e621-red in the viewer closes it and loads recent posts");
+    }
+  );
 
   log("All browser tests passed.");
 } catch (error) {

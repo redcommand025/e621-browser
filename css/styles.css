@@ -248,9 +248,10 @@ select {
 }
 
 .brand,
-.brand-mark {
-  margin: 0 0 6px;
-  font-size: 1.35rem;
+.brand-mark,
+.viewer-brand {
+  margin: 0;
+  font-size: 1.2rem;
   font-weight: 800;
   letter-spacing: 0.04em;
   color: #ffd6db;
@@ -258,15 +259,52 @@ select {
 }
 
 .brand-mark {
+  display: block;
   font-size: 1rem;
   margin-bottom: 8px;
+}
+
+.brand-heading {
+  margin: 0 0 4px;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1;
+}
+
+button.brand,
+button.viewer-brand {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  min-height: 28px;
+  padding: 0 6px 0 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #ffd6db;
+  cursor: pointer;
+}
+
+button.brand:not(.secondary):not(:disabled),
+button.viewer-brand:not(.secondary):not(:disabled) {
+  background: transparent;
+  color: #ffd6db;
+  border-color: transparent;
+  font-weight: 800;
+}
+
+button.brand:focus,
+button.brand:focus-visible,
+button.viewer-brand:focus,
+button.viewer-brand:focus-visible {
+  outline: 2px solid #ffd6db;
+  outline-offset: 2px;
 }
 
 .top {
   position: relative;
   z-index: 20;
-  padding: 8px 12px 8px;
-  padding-top: max(8px, env(safe-area-inset-top));
+  padding: 8px 12px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -274,11 +312,10 @@ select {
   position: sticky;
   top: 0;
   z-index: 21;
-  margin: 0 -12px 4px;
-  padding: 6px 12px 8px;
+  margin: 0;
+  padding: 4px 12px 6px;
+  padding-top: max(4px, env(safe-area-inset-top));
   background: #140308;
-  background: color-mix(in srgb, #0a0204 94%, transparent);
-  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
 
@@ -623,6 +660,11 @@ select {
   top: 0;
   z-index: 5;
   background: #161616;
+  padding-top: 4px;
+}
+
+.viewer-brand {
+  margin: 0 8px 2px;
 }
 
 .viewer-bar {

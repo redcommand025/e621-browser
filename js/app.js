@@ -96,6 +96,8 @@ const els = {
   viewerAlts: document.getElementById("viewer-alts"),
   viewerContextBtn: document.getElementById("viewer-context-btn"),
   viewerTags: document.getElementById("viewer-tags"),
+  brandHome: document.getElementById("brand-home"),
+  viewerBrandHome: document.getElementById("viewer-brand-home"),
   retry: document.getElementById("retry"),
   viewNav: document.getElementById("view-nav"),
   favoritesPanel: document.getElementById("favorites-panel"),
@@ -1063,6 +1065,11 @@ function goPostsRecent() {
   return loadPage({ page: 1, append: false });
 }
 
+function goHomeToPosts() {
+  closeViewer();
+  return goPostsRecent();
+}
+
 function runHot() {
   setView("posts");
   const tokens = tokenize(els.search.value).filter((item) => !/^[-]?order:/i.test(item));
@@ -1590,6 +1597,15 @@ function bindEvents() {
       reloadCurrent({ page: Math.max(1, state.page), append: false });
     });
   }
+
+  function bindHomeButton(button) {
+    if (!button) return;
+    button.addEventListener("click", function () {
+      goHomeToPosts();
+    });
+  }
+  bindHomeButton(els.brandHome);
+  bindHomeButton(els.viewerBrandHome);
 
   if (els.viewNav) {
     els.viewNav.addEventListener("click", (event) => {
