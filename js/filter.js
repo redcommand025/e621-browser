@@ -238,15 +238,40 @@ export function isValidUsername(value) {
 
 export const TAG_CATEGORY_ORDER = Object.freeze([
   "artist",
+  "contributor",
   "copyright",
   "character",
   "species",
   "general",
   "meta",
   "lore",
-  "contributor",
   "invalid",
 ]);
+
+export const TAG_CATEGORY_LABELS = Object.freeze({
+  artist: "Artists",
+  contributor: "Contributors",
+  copyright: "Copyrights",
+  character: "Characters",
+  species: "Species",
+  meta: "Meta",
+  lore: "Lore",
+  general: "General",
+  invalid: "Invalid",
+});
+
+export function formatTagCategoryLabel(category) {
+  const key = String(category || "").trim();
+  if (TAG_CATEGORY_LABELS[key]) return TAG_CATEGORY_LABELS[key];
+  if (!key) return "Tags";
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b[a-z]/g, function (ch) {
+      return ch.toUpperCase();
+    });
+}
 
 function tagListFrom(value) {
   if (Array.isArray(value)) return value;

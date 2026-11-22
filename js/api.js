@@ -134,7 +134,7 @@ export function fetchJson(path, params = {}, { signal } = {}) {
 export async function fetchPosts({ tags, page = 1, limit = PAGE_LIMIT, signal } = {}) {
   const data = await fetchJson(
     "/posts.json",
-    { tags, page: String(page), limit: String(limit) },
+    { tags, page: String(page), limit: String(limit), mode: "extended" },
     { signal }
   );
   return normalizePostsResponse(data);
@@ -187,7 +187,7 @@ export async function fetchPoolById(id, { signal } = {}) {
 }
 
 export async function fetchPopular({ scale = "day", date = "", signal } = {}) {
-  const params = { scale: scale || "day" };
+  const params = { scale: scale || "day", mode: "extended" };
   if (date) params.date = date;
   const data = await fetchJson("/popular.json", params, { signal });
   return normalizePostsResponse(data);

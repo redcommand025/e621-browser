@@ -6,6 +6,7 @@ import {
   filterSuggestions,
   collectTagsByCategory,
   formatPoolName,
+  formatTagCategoryLabel,
   isBlockedTag,
   isValidUsername,
   nameContainsBlockedTerm,
@@ -967,7 +968,8 @@ function renderViewerTags(post) {
     wrap.className = "tag-group";
     const title = document.createElement("p");
     title.className = "tag-group-title";
-    title.textContent = group.category;
+    title.textContent = formatTagCategoryLabel(group.category);
+    wrap.dataset.category = group.category;
     wrap.append(title);
     for (const name of group.tags) {
       const row = document.createElement("div");

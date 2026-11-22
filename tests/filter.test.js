@@ -13,6 +13,7 @@ import {
   isBlockedTag,
   collectTagsByCategory,
   formatPoolName,
+  formatTagCategoryLabel,
   isValidUsername,
   nameContainsBlockedTerm,
   poolDirectionOpen,
@@ -258,4 +259,44 @@ test("stepPoolIds walks around blocked neighbors and reports unknown ids", () =>
   assert.deepEqual(stepPoolIds([10, 20], 1, -1, allBlocked, 8), { index: -1, id: null, need: [] });
   assert.equal(poolDirectionOpen([10, 20], 1, -1, allBlocked), false);
   assert.equal(poolDirectionOpen([10, 20], 0, 1, { 20: "ok" }), true);
+});
+
+test("collectTagsByCategory shows every e621 tag category in the requested order", () => {
+  const groups = collectTagsByCategory({
+    tags: {
+      invalid: ["bad_tag"],
+      general: ["solo", "canine", "young"],
+      lore: ["some_lore"],
+      meta: ["hi_res"],
+      species: ["canid"],
+      character: ["fox_mccloud", "loli"],
+      copyright: ["nintendo"],
+      contributor: ["example_contributor"],
+      artist: ["example_artist"],
+      custom_bucket: ["extra_tag"],
+    },
+  });
+  assert.deepEqual(
+    groups.map((group) => [group.category, formatTagCategoryLabel(group.category), group.tags]),
+    [
+      ["artist", "Artists", ["example_artist"]],
+      ["contributor", "Contributors", ["example_contributor"]],
+      ["copyright", "Copyrights", ["nintendo"]],
+      ["character", "Characters", ["fox_mccloud"]],
+      ["species", "Species", ["canid"]],
+      ["general", "General", ["solo", "canine"]],
+      ["meta", "Meta", ["hi_res"]],
+      ["lore", "Lore", ["some_lore"]],
+      ["invalid", "Invalid", ["bad_tag"]],
+      ["custom_bucket", "Custom Bucket", ["extra_tag"]],
+    ]
+  );
+  assert.equal(groups.some((group) => group.tags.includes("young") || group.tags.includes("loli")), false);
+  assert.equal(formatTagCategoryLabel("artist"), "Artists");
+  assert.equal(formatTagCategoryLabel("contributor"), "Contributors");
+  assert.equal(formatTagCategoryLabel("copyright"), "Copyrights");
+  assert.equal(formatTagCategoryLabel("character"), "Characters");
+  assert.equal(formatTagCategoryLabel("species"), "Species");
+  assert.equal(formatTagCategoryLabel("meta"), "Meta");
+  assert.equal(formatTagCategoryLabel("lore"), "Lore");
 });

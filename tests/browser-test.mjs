@@ -8,6 +8,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
+import {
+  collectTagsByCategory,
+  formatTagCategoryLabel,
+  isBlockedTag,
+  normalizePostsResponse,
+  tagName,
+  TAG_CATEGORY_ORDER,
+} from "../js/filter.js";
+import { buildApiUrl } from "../js/api.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIME = {
@@ -928,6 +937,96 @@ try {
       } else {
         log("SKIP minus-tag click; added search returned no posts");
       }
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const ids = await page.$$eval("#grid .thumb img", (imgs) =>
+        imgs.map((img) => {
+          const match = (img.alt || "").match(/Post\s+(\d+)/);
+          return match ? Number(match[1]) : 0;
+        }).filter(Boolean)
+      );
+      assert.ok(ids.length, "needed post ids from the safe grid");
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      const apiUrl = buildApiUrl("/posts.json", {
+        tags: "id:" + ids.join(",") + " rating:s -young -loli -shota -cub",
+        limit: String(Math.min(Math.max(ids.length, 1), 24)),
+        mode: "extended",
+      });
+      const apiRes = await fetch(apiUrl, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        },
+      });
+      assert.equal(apiRes.ok, true, "API tag comparison fetch failed: " + apiRes.status);
+      const apiPosts = normalizePostsResponse(await apiRes.json());
+      const postsById = new Map(apiPosts.map((post) => [Number(post.id), post]));
+      let chosen = null;
+      for (const id of ids) {
+        const post = postsById.get(id);
+        const categoryCount = post && post.tags && !Array.isArray(post.tags)
+          ? Object.keys(post.tags).filter((key) => {
+              const list = post.tags[key];
+              return Array.isArray(list) ? list.length > 0 : Boolean(list);
+            }).length
+          : 0;
+        if (post && categoryCount >= 4) {
+          chosen = { id, post };
+          break;
+        }
+      }
+      assert.ok(chosen, "needed a safe post with several tag categories");
+      await page.click('#grid .thumb img[alt="Post ' + chosen.id + '"]');
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await page.waitForFunction(() => document.querySelectorAll("#viewer-tags .tag-row").length > 0, { timeout: 15000 });
+      const expected = collectTagsByCategory(chosen.post);
+      assert.ok(expected.length >= 4, "expected several visible tag groups");
+      const rendered = await page.evaluate(() =>
+        [...document.querySelectorAll("#viewer-tags .tag-group")].map((group) => ({
+          category: group.dataset.category,
+          title: (group.querySelector(".tag-group-title") || {}).textContent.trim(),
+          tags: [...group.querySelectorAll(".tag-name")].map((node) => node.textContent.trim()),
+        }))
+      );
+      assert.deepEqual(
+        rendered,
+        expected.map((group) => ({
+          category: group.category,
+          title: formatTagCategoryLabel(group.category),
+          tags: group.tags,
+        }))
+      );
+      const fromApi = new Set();
+      const tags = chosen.post.tags || {};
+      for (const key of Object.keys(tags)) {
+        const list = Array.isArray(tags[key]) ? tags[key] : String(tags[key] || "").split(/\s+/);
+        for (const raw of list) {
+          const name = tagName(raw);
+          if (name && !isBlockedTag(name)) fromApi.add(name);
+        }
+      }
+      const fromDom = new Set(rendered.flatMap((group) => group.tags));
+      assert.deepEqual([...fromDom].sort(), [...fromApi].sort());
+      const known = new Set(TAG_CATEGORY_ORDER);
+      const renderedKnown = rendered.map((group) => group.category).filter((key) => known.has(key));
+      const expectedKnown = TAG_CATEGORY_ORDER.filter((key) => renderedKnown.includes(key));
+      assert.deepEqual(renderedKnown, expectedKnown);
+      const titles = rendered.map((group) => group.title);
+      for (const blocked of ["young", "loli", "shota", "cub"]) {
+        assert.equal(fromDom.has(blocked), false);
+      }
+      log("PASS viewer tags match the API and use the requested category order (" + titles.join(", ") + ")");
     }
   );
 
