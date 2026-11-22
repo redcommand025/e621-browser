@@ -235,3 +235,80 @@ export function isValidUsername(value) {
   const name = sanitizeUsername(value);
   return /^[A-Za-z0-9_~\-]+$/.test(name) && name.length >= 1 && name.length <= 100;
 }
+
+export const TAG_CATEGORY_ORDER = Object.freeze([
+  "artist",
+  "copyright",
+  "character",
+  "species",
+  "general",
+  "meta",
+  "lore",
+  "contributor",
+  "invalid",
+]);
+
+function tagListFrom(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return tokenize(value);
+  return [];
+}
+
+function uniqueAllowedTags(list) {
+  const names = [];
+  const seen = new Set();
+  for (const raw of tagListFrom(list)) {
+    const name = tagName(raw);
+    if (!name || isBlockedTag(name) || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Group a post's tags by category. Blocked tags are omitted.
+ * Accepts a category object or a flat array (listed as general).
+ */
+export function collectTagsByCategory(post) {
+  const groups = [];
+  const tags = post && post.tags;
+  if (!tags) return groups;
+  if (Array.isArray(tags)) {
+    const names = uniqueAllowedTags(tags);
+    if (names.length) groups.push({ category: "general", tags: names });
+    return groups;
+  }
+  if (typeof tags === "object") {
+    const used = new Set();
+    for (const category of TAG_CATEGORY_ORDER) {
+      if (!Object.prototype.hasOwnProperty.call(tags, category)) continue;
+      used.add(category);
+      const names = uniqueAllowedTags(tags[category]);
+      if (names.length) groups.push({ category: category, tags: names });
+    }
+    const extras = Object.keys(tags)
+      .filter((key) => !used.has(key))
+      .sort();
+    for (const category of extras) {
+      const names = uniqueAllowedTags(tags[category]);
+      if (names.length) groups.push({ category: category, tags: names });
+    }
+  }
+  return groups;
+}
+
+export function formatPoolName(name) {
+  return String(name || "").replace(/_/g, " ").trim();
+}
+
+export function postPoolIds(post) {
+  const raw = (post && (post.pools || post.pool_ids)) || [];
+  const out = [];
+  for (const value of raw) {
+    const id = Number(value);
+    if (!Number.isFinite(id) || out.indexOf(id) !== -1) continue;
+    out.push(id);
+  }
+  return out;
+}

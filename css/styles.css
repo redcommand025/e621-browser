@@ -611,19 +611,34 @@ select {
   border: 0;
   background: #000;
   color: #fff;
+  overflow: auto;
 }
 
 .viewer::backdrop {
   background: rgba(0, 0, 0, 0.86);
 }
 
+.viewer-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #161616;
+}
+
 .viewer-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 8px;
+  padding: 6px 8px;
   background: #161616;
+}
+
+.viewer-bar button,
+.viewer-context button {
+  min-height: 32px;
+  padding: 3px 10px;
+  width: auto;
 }
 
 .viewer-bar a,
@@ -632,8 +647,26 @@ select {
   padding: 0 6px;
 }
 
+.viewer-context {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: stretch;
+  padding: 0 8px 6px;
+  background: #161616;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+#viewer-context-btn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
 .viewer-stage {
-  min-height: 50dvh;
+  min-height: 36dvh;
   display: grid;
   place-items: center;
   background: #000;
@@ -642,9 +675,59 @@ select {
 .viewer-stage img,
 .viewer-stage video {
   max-width: 100%;
-  max-height: calc(100dvh - 140px);
+  max-height: 62dvh;
   width: auto;
   height: auto;
+}
+
+.viewer-tags {
+  padding: 8px 10px 20px;
+  text-align: left;
+  background: #111;
+}
+
+.tag-group {
+  margin: 0 0 10px;
+}
+
+.tag-group-title {
+  margin: 0 0 4px;
+  color: #c9a4aa;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 4px;
+}
+
+.tag-row .tag-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 3px 8px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #1a080c;
+  color: #f6ecee;
+}
+
+.tag-row .tag-plus,
+.tag-row .tag-minus {
+  flex: 0 0 auto;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  background: #2a0e14;
+  color: #fff;
+  border-color: #6a2430;
 }
 
 .viewer-error,

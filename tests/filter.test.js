@@ -11,8 +11,11 @@ import {
   filterPosts,
   filterSuggestions,
   isBlockedTag,
+  collectTagsByCategory,
+  formatPoolName,
   isValidUsername,
   nameContainsBlockedTerm,
+  postPoolIds,
   sanitizeUsername,
   shouldExcludePost,
 } from "../js/filter.js";
@@ -205,4 +208,35 @@ test("usernames are sanitized before fav: queries", () => {
   assert.equal(isValidUsername("bitWolfy"), true);
   assert.equal(isValidUsername("bad user"), false);
   assert.equal(isValidUsername("fav:foo young"), false);
+});
+
+test("collectTagsByCategory groups tags and omits blocked terms", () => {
+  const groups = collectTagsByCategory({
+    tags: {
+      meta: ["hi_res"],
+      artist: ["example_artist"],
+      general: ["canine", "young", "solo"],
+      character: ["loli", "fox_mccloud"],
+    },
+  });
+  assert.deepEqual(
+    groups.map((group) => [group.category, group.tags]),
+    [
+      ["artist", ["example_artist"]],
+      ["character", ["fox_mccloud"]],
+      ["general", ["canine", "solo"]],
+      ["meta", ["hi_res"]],
+    ]
+  );
+  const flat = collectTagsByCategory({ tags: ["canine", "cub", "fox"] });
+  assert.deepEqual(flat, [{ category: "general", tags: ["canine", "fox"] }]);
+  const spaced = collectTagsByCategory({ tags: { general: "canine young solo" } });
+  assert.deepEqual(spaced, [{ category: "general", tags: ["canine", "solo"] }]);
+});
+
+test("formatPoolName and postPoolIds skip blocked pool names only at the name check", () => {
+  assert.equal(formatPoolName("Safety_Plan"), "Safety Plan");
+  assert.deepEqual(postPoolIds({ pools: [12, "12", 15] }), [12, 15]);
+  assert.equal(nameContainsBlockedTerm("young_fox_pool"), true);
+  assert.equal(nameContainsBlockedTerm("Safety_Plan"), false);
 });

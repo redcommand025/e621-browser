@@ -751,6 +751,219 @@ try {
     }
   );
 
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+      await page.evaluateOnNewDocument(() => {
+        const boom = () => { throw new Error("storage blocked"); };
+        const fake = {
+          getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom,
+          get length() { throw new Error("storage blocked"); },
+        };
+        Object.defineProperty(window, "localStorage", { get: () => fake });
+      });
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      const chrome = await page.evaluate(() => ({
+        prev: document.getElementById("viewer-prev").textContent.trim(),
+        next: document.getElementById("viewer-next").textContent.trim(),
+        mid: document.getElementById("viewer-context-btn").textContent.trim(),
+        kind: document.getElementById("viewer-context-btn").dataset.kind,
+        prevDisabled: document.getElementById("viewer-prev").disabled,
+        hasMedia: Boolean(document.querySelector("#viewer-stage img, #viewer-stage video")),
+      }));
+      assert.equal(chrome.prev, "<Prev");
+      assert.equal(chrome.next, "Next>");
+      assert.equal(chrome.mid, "Search: (none)");
+      assert.equal(chrome.kind, "search");
+      assert.equal(chrome.prevDisabled, true);
+      assert.equal(chrome.hasMedia, true);
+
+      const tagRows = await page.$$eval("#viewer-tags .tag-row", (rows) =>
+        rows.map((row) => ({
+          name: row.querySelector(".tag-name")?.textContent || "",
+          plus: row.querySelector(".tag-plus")?.textContent || "",
+          minus: row.querySelector(".tag-minus")?.textContent || "",
+        }))
+      );
+      assert.ok(tagRows.length > 0, "expected tags under the image");
+      for (const row of tagRows) {
+        assert.equal(row.plus, "+");
+        assert.equal(row.minus, "-");
+        for (const tag of ["young", "loli", "shota", "cub"]) {
+          assert.equal(row.name === tag, false, "blocked tag shown: " + row.name);
+        }
+      }
+      const pick = tagRows.find((row) => row.name && !row.name.includes(":")) || tagRows[0];
+      const firstHref = await page.$eval("#viewer-open", (el) => el.getAttribute("href"));
+      const nextDisabled = await page.$eval("#viewer-next", (el) => el.disabled);
+      if (!nextDisabled) {
+        await page.click("#viewer-next");
+        await page.waitForFunction(
+          (prev) => document.getElementById("viewer-open").getAttribute("href") !== prev,
+          { timeout: 20000 },
+          firstHref
+        );
+        await page.click("#viewer-prev");
+        await page.waitForFunction(
+          (prev) => document.getElementById("viewer-open").getAttribute("href") === prev,
+          { timeout: 20000 },
+          firstHref
+        );
+      }
+      log(`PASS viewer bar is <Prev / Search: (none) / Next> with ${tagRows.length} tag rows`);
+
+      const beforeReplace = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      const selector = `#viewer-tags .tag-name`;
+      const handle = await page.evaluateHandle((name) => {
+        return [...document.querySelectorAll("#viewer-tags .tag-name")].find((el) => el.textContent === name);
+      }, pick.name);
+      const el = handle.asElement();
+      assert.ok(el, "could not find tag button " + pick.name);
+      await el.click();
+      await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+      const replaced = await page.$eval("#search", (node) => node.value.trim());
+      assert.equal(replaced, pick.name);
+      const replaceUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        beforeReplace,
+        { match: (url) => (new URL(url).searchParams.get("tags") || "").includes(pick.name) }
+      );
+      const replaceTags = new URL(replaceUrl).searchParams.get("tags") || "";
+      assert.match(replaceTags, new RegExp("(^|\\s)" + pick.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)"));
+      assert.match(replaceTags, /(^|\s)rating:s(\s|$)/);
+      assert.match(replaceTags, /(^|\s)-young(\s|$)/);
+      log("PASS tapping a tag replaces the search and runs it (" + pick.name + ")");
+
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await page.waitForFunction(
+        (label) => document.getElementById("viewer-context-btn").textContent.trim() === label,
+        { timeout: 10000 },
+        "Search: (" + pick.name + ")"
+      );
+      const plusRows = await page.$$eval("#viewer-tags .tag-row", (rows) =>
+        rows.map((row) => row.querySelector(".tag-name")?.textContent || "")
+      );
+      const addName = plusRows.find((name) => name && name !== pick.name && !name.includes(":")) || plusRows.find((name) => name && name !== pick.name);
+      assert.ok(addName, "needed a second tag to add");
+      const beforeAdd = apiCalls.filter((url) => url.includes("/posts.json")).length;
+      await page.evaluate((name) => {
+        const row = [...document.querySelectorAll("#viewer-tags .tag-row")].find((el) => el.querySelector(".tag-name")?.textContent === name);
+        row.querySelector(".tag-plus").click();
+      }, addName);
+      await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+      const added = await page.$eval("#search", (node) => node.value.trim());
+      assert.match(added, new RegExp("(^|\\s)" + pick.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)"));
+      assert.match(added, new RegExp("(^|\\s)" + addName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)"));
+      const addUrl = await waitForCall(
+        () => apiCalls.filter((url) => url.includes("/posts.json")),
+        beforeAdd,
+        { match: (url) => {
+          const tags = new URL(url).searchParams.get("tags") || "";
+          return tags.includes(pick.name) && tags.includes(addName);
+        } }
+      );
+      const addTags = new URL(addUrl).searchParams.get("tags") || "";
+      assert.match(addTags, /(^|\s)rating:s(\s|$)/);
+      assert.match(addTags, /(^|\s)-young(\s|$)/);
+      log("PASS + adds the tag to the current search (" + added + ")");
+
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0 || /No posts found/i.test(document.getElementById("status").textContent), { timeout: 20000 });
+      if (await page.$("#grid .thumb")) {
+        await page.click("#grid .thumb");
+        await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+        const beforeMinus = apiCalls.filter((url) => url.includes("/posts.json")).length;
+        const minusName = await page.$eval("#viewer-tags .tag-name", (node) => node.textContent);
+        await page.click("#viewer-tags .tag-minus");
+        await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+        const excluded = await page.$eval("#search", (node) => node.value.trim());
+        assert.match(excluded, new RegExp("(^|\\s)-" + minusName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)"));
+        const minusUrl = await waitForCall(
+          () => apiCalls.filter((url) => url.includes("/posts.json")),
+          beforeMinus,
+          { match: (url) => (new URL(url).searchParams.get("tags") || "").includes("-" + minusName) }
+        );
+        const minusTags = new URL(minusUrl).searchParams.get("tags") || "";
+        assert.match(minusTags, /(^|\s)rating:s(\s|$)/);
+        assert.match(minusTags, /(^|\s)-young(\s|$)/);
+        log("PASS - excludes the tag (" + excluded + ")");
+      } else {
+        log("SKIP minus-tag click; added search returned no posts");
+      }
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+      );
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.click('[data-view="pools"]');
+      await page.waitForSelector("#pools-panel:not([hidden])");
+      await page.$eval("#pool-search", (el) => { el.value = ""; });
+      await page.$eval("#pool-search", (el) => { el.value = "Official_Pokémon_species_artwork"; });
+      await page.click("#pool-load");
+      await page.waitForFunction(() => document.querySelectorAll("#pool-list .pool-item").length > 0, { timeout: 20000 });
+      const poolTitle = await page.evaluate(() => {
+        const items = [...document.querySelectorAll("#pool-list .pool-item")];
+        const match = items.find((item) => /official\s+pokémon\s+species\s+artwork/i.test(item.querySelector("strong")?.textContent || ""));
+        const item = match || items[0];
+        if (match) match.dataset.testPick = "1";
+        return (item.querySelector("strong")?.textContent || "").trim();
+      });
+      if (await page.$('#pool-list .pool-item[data-test-pick="1"]')) {
+        await page.click('#pool-list .pool-item[data-test-pick="1"]');
+      } else {
+        await page.click("#pool-list .pool-item");
+      }
+      await page.waitForFunction(
+        () => document.querySelectorAll("#grid .thumb").length > 0 || /No viewable posts/i.test(document.getElementById("status").textContent),
+        { timeout: 20000 }
+      );
+      if (!(await page.$("#grid .thumb"))) {
+        log("SKIP in-pool viewer bar; no viewable posts in " + poolTitle);
+        return;
+      }
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await page.waitForFunction(
+        (name) => document.getElementById("viewer-context-btn").textContent.trim() === name,
+        { timeout: 10000 },
+        poolTitle
+      );
+      const mid = await page.$eval("#viewer-context-btn", (el) => ({
+        text: el.textContent.trim(),
+        kind: el.dataset.kind,
+      }));
+      assert.equal(mid.text, poolTitle);
+      assert.equal(mid.kind, "pool");
+      await page.click("#viewer-context-btn");
+      await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+      assert.equal(await page.$eval("#pools-panel", (el) => el.hidden), false);
+      assert.equal(await page.$eval("#pool-nav", (el) => el.hidden), false);
+      log("PASS in-pool viewer middle button shows the pool name and returns to it (" + poolTitle + ")");
+    }
+  );
+
 
   log("All browser tests passed.");
 } catch (error) {

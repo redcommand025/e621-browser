@@ -4,8 +4,12 @@ import {
   filterPools,
   filterPosts,
   filterSuggestions,
+  collectTagsByCategory,
+  formatPoolName,
   isBlockedTag,
   isValidUsername,
+  nameContainsBlockedTerm,
+  postPoolIds,
   sanitizeUsername,
   tagName,
   tokenize,
@@ -21,6 +25,7 @@ import {
   basicAuthUsername,
   clearBasicAuth,
   fetchAutocomplete,
+  fetchPoolById,
   fetchPools,
   fetchPopular,
   fetchPosts,
@@ -89,6 +94,8 @@ const els = {
   viewerOpen: document.getElementById("viewer-open"),
   viewerMeta: document.getElementById("viewer-meta"),
   viewerAlts: document.getElementById("viewer-alts"),
+  viewerContextBtn: document.getElementById("viewer-context-btn"),
+  viewerTags: document.getElementById("viewer-tags"),
   retry: document.getElementById("retry"),
   viewNav: document.getElementById("view-nav"),
   favoritesPanel: document.getElementById("favorites-panel"),
@@ -135,6 +142,8 @@ const state = {
   popularScale: "day",
   popularDates: {},
   popularAll: [],
+  poolCache: {},
+  contextSeq: 0,
 };
 
 function parseStoredList(raw, asTags = false) {
@@ -479,6 +488,7 @@ async function loadPage({ page, append }) {
     els.next.disabled = !state.hasMore || state.loading;
     els.more.disabled =
       !state.hasMore || state.loading || state.appended >= MAX_APPENDED_PAGES;
+    if (els.viewer && els.viewer.open) updateViewerNav();
   }
 }
 
@@ -591,14 +601,226 @@ function updateQualityButton(post) {
   els.viewerQuality.textContent = preferSample() ? "Load original" : "Use sample";
 }
 
+function atViewerStart() {
+  return state.activeIndex <= 0 && !(state.page > 1 && state.appended === 0);
+}
+
+function atViewerEnd() {
+  return state.activeIndex >= state.posts.length - 1 && !state.hasMore;
+}
+
+function updateViewerNav() {
+  const disablePrev = atViewerStart() || state.loading;
+  const disableNext = atViewerEnd() || state.loading;
+  if (els.viewerPrev) els.viewerPrev.disabled = disablePrev;
+  if (els.viewerNext) els.viewerNext.disabled = disableNext;
+}
+
+function currentUserSearchLabel() {
+  const text = els.search && els.search.value ? String(els.search.value).trim() : "";
+  return text;
+}
+
+function setContextSearchLabel() {
+  if (!els.viewerContextBtn) return;
+  const query = currentUserSearchLabel();
+  els.viewerContextBtn.textContent = "Search: (" + (query || "none") + ")";
+  els.viewerContextBtn.dataset.kind = "search";
+  els.viewerContextBtn.removeAttribute("data-pool-id");
+  els.viewerContextBtn.title = els.viewerContextBtn.textContent;
+}
+
+function setContextPoolLabel(pool) {
+  if (!els.viewerContextBtn || !pool || nameContainsBlockedTerm(pool.name)) return false;
+  const name = formatPoolName(pool.name);
+  if (!name) return false;
+  els.viewerContextBtn.textContent = name;
+  els.viewerContextBtn.dataset.kind = "pool";
+  els.viewerContextBtn.dataset.poolId = String(pool.id);
+  els.viewerContextBtn.title = name;
+  return true;
+}
+
+function cachePool(pool) {
+  if (!pool || pool.id == null) return;
+  if (!state.poolCache) state.poolCache = {};
+  state.poolCache[String(pool.id)] = pool;
+}
+
+function cachedPool(id) {
+  if (!state.poolCache) return null;
+  return state.poolCache[String(id)] || null;
+}
+
+function updateViewerContext(post) {
+  setContextSearchLabel();
+  const seq = (state.contextSeq = (state.contextSeq || 0) + 1);
+  const openedFrom = state.view === "pools" && state.activePool ? state.activePool : null;
+  if (openedFrom && setContextPoolLabel(openedFrom)) {
+    cachePool(openedFrom);
+    return;
+  }
+  const ids = postPoolIds(post);
+  if (!ids.length) return;
+  const pending = [];
+  for (const id of ids) {
+    const cached = cachedPool(id);
+    if (cached) {
+      if (setContextPoolLabel(cached)) return;
+      continue;
+    }
+    pending.push(id);
+  }
+  if (!pending.length) return;
+  loadPoolsForContext(pending, seq);
+}
+
+function loadPoolsForContext(ids, seq) {
+  Promise.resolve()
+    .then(function () {
+      function next(index) {
+        if (index >= ids.length) return null;
+        if (seq !== state.contextSeq) return null;
+        return fetchPoolById(ids[index]).then(function (pool) {
+          if (seq !== state.contextSeq) return null;
+          if (pool) {
+            cachePool(pool);
+            if (!nameContainsBlockedTerm(pool.name) && formatPoolName(pool.name)) {
+              return pool;
+            }
+          }
+          return next(index + 1);
+        });
+      }
+      return next(0);
+    })
+    .then(function (pool) {
+      if (!pool || seq !== state.contextSeq) return;
+      setContextPoolLabel(pool);
+    })
+    .catch(function (error) {
+      if (error && error.name === "AbortError") return;
+      console.error(error);
+    });
+}
+
+function renderViewerTags(post) {
+  if (!els.viewerTags) return;
+  els.viewerTags.innerHTML = "";
+  const groups = collectTagsByCategory(post);
+  for (const group of groups) {
+    const wrap = document.createElement("div");
+    wrap.className = "tag-group";
+    const title = document.createElement("p");
+    title.className = "tag-group-title";
+    title.textContent = group.category;
+    wrap.append(title);
+    for (const name of group.tags) {
+      const row = document.createElement("div");
+      row.className = "tag-row";
+      const plus = document.createElement("button");
+      plus.type = "button";
+      plus.className = "tag-plus";
+      plus.textContent = "+";
+      plus.setAttribute("aria-label", "Add " + name);
+      plus.addEventListener("click", function () {
+        applyTagToSearch("add", name);
+      });
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "tag-name";
+      label.textContent = name;
+      label.addEventListener("click", function () {
+        applyTagToSearch("replace", name);
+      });
+      const minus = document.createElement("button");
+      minus.type = "button";
+      minus.className = "tag-minus";
+      minus.textContent = "-";
+      minus.setAttribute("aria-label", "Exclude " + name);
+      minus.addEventListener("click", function () {
+        applyTagToSearch("exclude", name);
+      });
+      row.append(plus, label, minus);
+      wrap.append(row);
+    }
+    els.viewerTags.append(wrap);
+  }
+}
+
+function applyTagToSearch(mode, raw) {
+  if (isBlockedTag(raw)) return;
+  const name = tagName(raw);
+  if (!name) return;
+  const tokens = tokenize(els.search && els.search.value);
+  let next = [];
+  if (mode === "replace") {
+    next = [name];
+  } else if (mode === "add") {
+    next = tokens.filter(function (token) {
+      return tagName(token) !== name;
+    });
+    next.push(name);
+  } else {
+    next = tokens.filter(function (token) {
+      return tagName(token) !== name;
+    });
+    next.push("-" + name);
+  }
+  if (els.search) els.search.value = next.join(" ");
+  closeViewer();
+  setView("posts");
+  setSub("");
+  searchFromStart();
+}
+
+function activateViewerContext() {
+  if (!els.viewerContextBtn) return;
+  if (els.viewerContextBtn.dataset.kind === "pool") {
+    const id = Number(els.viewerContextBtn.dataset.poolId);
+    const current = state.activePool && Number(state.activePool.id) === id ? state.activePool : cachedPool(id);
+    closeViewer();
+    if (current && !nameContainsBlockedTerm(current.name)) {
+      if (state.view === "pools" && state.activePool && Number(state.activePool.id) === id) return;
+      setView("pools");
+      openPool(current);
+      return;
+    }
+    if (!Number.isFinite(id)) return;
+    setView("pools");
+    beginLoad("Loading pool…");
+    fetchPoolById(id)
+      .then(function (pool) {
+        if (!pool || nameContainsBlockedTerm(pool.name)) {
+          setStatus("That pool is not available.", "warn");
+          finishLoad();
+          return;
+        }
+        cachePool(pool);
+        finishLoad();
+        openPool(pool);
+      })
+      .catch(function (error) {
+        if (error && error.name === "AbortError") return;
+        setStatus((error && error.message) || "Could not open that pool.", "error", { retry: true });
+        finishLoad();
+      });
+    return;
+  }
+  closeViewer();
+}
+
 function renderViewer() {
   const post = state.posts[state.activeIndex];
   if (!post) return;
-  els.viewerOpen.href = postPageUrl(post);
-  els.viewerMeta.textContent = `#${post.id} · ${String(post.rating || "").toUpperCase()}`;
-  els.viewerPrev.disabled = state.activeIndex <= 0;
-  els.viewerNext.disabled = state.activeIndex >= state.posts.length - 1;
+  if (els.viewerOpen) els.viewerOpen.href = postPageUrl(post);
+  if (els.viewerMeta) {
+    els.viewerMeta.textContent = "#" + post.id + " · " + String(post.rating || "").toUpperCase();
+  }
+  updateViewerNav();
   updateQualityButton(post);
+  renderViewerTags(post);
+  updateViewerContext(post);
   if (isVideoPost(post)) {
     const sources = videoSources(post);
     const chosen =
@@ -627,6 +849,7 @@ function openViewer(index) {
 function closeViewer() {
   try {
     if (els.viewerStage) clearViewerMedia();
+    if (els.viewerTags) els.viewerTags.innerHTML = "";
     if (!els.viewer) return;
     if (els.viewer.open && typeof els.viewer.close === "function") els.viewer.close();
     else els.viewer.removeAttribute("open");
@@ -636,10 +859,39 @@ function closeViewer() {
 }
 
 function stepViewer(delta) {
+  if (state.loading) return Promise.resolve();
   const next = state.activeIndex + delta;
-  if (next < 0 || next >= state.posts.length) return;
-  state.activeIndex = next;
-  renderViewer();
+  if (next >= 0 && next < state.posts.length) {
+    state.activeIndex = next;
+    renderViewer();
+    return Promise.resolve();
+  }
+  if (delta > 0 && state.hasMore) {
+    const from = state.posts.length;
+    if (els.viewerNext) els.viewerNext.disabled = true;
+    return Promise.resolve(reloadCurrent({ page: state.page + 1, append: true })).then(function () {
+      if (state.posts.length > from) {
+        state.activeIndex = from;
+        renderViewer();
+      } else {
+        updateViewerNav();
+      }
+    });
+  }
+  if (delta < 0 && state.page > 1 && state.appended === 0) {
+    if (els.viewerPrev) els.viewerPrev.disabled = true;
+    return Promise.resolve(reloadCurrent({ page: state.page - 1, append: false })).then(function () {
+      if (state.posts.length) {
+        state.activeIndex = state.posts.length - 1;
+        renderViewer();
+        if (els.viewer && !els.viewer.open) openViewer(state.activeIndex);
+      } else {
+        updateViewerNav();
+      }
+    });
+  }
+  updateViewerNav();
+  return Promise.resolve();
 }
 
 function bindViewerSwipe() {
@@ -703,6 +955,7 @@ function finishLoad() {
   els.next.disabled = !state.hasMore || state.loading;
   els.more.disabled =
     !state.hasMore || state.loading || state.appended >= MAX_APPENDED_PAGES;
+  if (els.viewer && els.viewer.open) updateViewerNav();
 }
 
 function showPostGrid() {
@@ -1114,6 +1367,7 @@ function renderPoolList(pools) {
   els.poolList.hidden = false;
   els.poolList.innerHTML = "";
   for (const pool of pools) {
+    cachePool(pool);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "pool-item";
@@ -1428,9 +1682,12 @@ function bindEvents() {
     }
   });
 
-  els.viewerClose.addEventListener("click", closeViewer);
-  els.viewerPrev.addEventListener("click", () => stepViewer(-1));
-  els.viewerNext.addEventListener("click", () => stepViewer(1));
+  if (els.viewerClose) els.viewerClose.addEventListener("click", closeViewer);
+  if (els.viewerPrev) els.viewerPrev.addEventListener("click", function () { stepViewer(-1); });
+  if (els.viewerNext) els.viewerNext.addEventListener("click", function () { stepViewer(1); });
+  if (els.viewerContextBtn) {
+    els.viewerContextBtn.addEventListener("click", activateViewerContext);
+  }
   els.viewerQuality.addEventListener("click", () => {
     els.preferSample.checked = !els.preferSample.checked;
     els.preferSample.dispatchEvent(new Event("change"));

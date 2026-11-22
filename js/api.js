@@ -171,6 +171,21 @@ export async function fetchPools({
   return Array.isArray(data) ? data : [];
 }
 
+export async function fetchPoolById(id, { signal } = {}) {
+  const poolId = Number(id);
+  if (!Number.isFinite(poolId)) return null;
+  const data = await fetchJson(
+    "/pools.json",
+    { "search[id]": String(poolId), limit: "1" },
+    { signal }
+  );
+  const list = Array.isArray(data) ? data : [];
+  for (const pool of list) {
+    if (pool && Number(pool.id) === poolId) return pool;
+  }
+  return list[0] || null;
+}
+
 export async function fetchPopular({ scale = "day", date = "", signal } = {}) {
   const params = { scale: scale || "day" };
   if (date) params.date = date;

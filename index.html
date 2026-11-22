@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261120b" />
+    <link rel="stylesheet" href="css/styles.css?v=20261122a" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -213,18 +213,24 @@
     </div>
 
     <dialog id="viewer" class="viewer">
-      <div class="viewer-bar">
-        <button id="viewer-close" type="button">Close</button>
-        <button id="viewer-prev" type="button">Prev</button>
-        <button id="viewer-next" type="button">Next</button>
-        <button id="viewer-quality" type="button">Load original</button>
-        <a id="viewer-open" href="#" target="_blank" rel="noopener noreferrer">Open on e621</a>
-        <span id="viewer-meta"></span>
+      <div class="viewer-chrome">
+        <div class="viewer-bar">
+          <button id="viewer-close" type="button">Close</button>
+          <button id="viewer-quality" type="button">Load original</button>
+          <a id="viewer-open" href="#" target="_blank" rel="noopener noreferrer">Open on e621</a>
+          <span id="viewer-meta"></span>
+        </div>
+        <div class="viewer-context">
+          <button id="viewer-prev" type="button">&lt;Prev</button>
+          <button id="viewer-context-btn" type="button">Search: (none)</button>
+          <button id="viewer-next" type="button">Next&gt;</button>
+        </div>
       </div>
       <div id="viewer-stage" class="viewer-stage"></div>
       <div id="viewer-alts" class="viewer-alts"></div>
+      <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261120b"></script>
+    <script type="module" src="js/app.js?v=20261122a"></script>
   </body>
 </html>
