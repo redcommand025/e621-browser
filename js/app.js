@@ -22,13 +22,13 @@ import {
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js?v=20261122h";
+} from "./filter.js?v=20261122i";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261122h";
+} from "./storage.js?v=20261122i";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -50,7 +50,7 @@ import {
   setBasicAuth,
   verifyBasicAuth,
   videoSources,
-} from "./api.js?v=20261122h";
+} from "./api.js?v=20261122i";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -130,7 +130,12 @@ const els = {
   authClear: document.getElementById("auth-clear"),
   authStatus: document.getElementById("auth-status"),
   authSigned: document.getElementById("auth-signed"),
-  authDetails: document.getElementById("auth-details"),
+  accountBtn: document.getElementById("account-btn"),
+  accountDialog: document.getElementById("account-dialog"),
+  accountClose: document.getElementById("account-close"),
+  accountTitle: document.getElementById("account-title"),
+  favAccountNote: document.getElementById("fav-account-note"),
+  favOpenAccount: document.getElementById("fav-open-account"),
   poolsPanel: document.getElementById("pools-panel"),
   poolSearch: document.getElementById("pool-search"),
   poolOrder: document.getElementById("pool-order"),
@@ -1687,6 +1692,9 @@ function activateSub(sub) {
     return loadPopular({ page: 1, append: false });
   }
   if (sub === "favorites") {
+    if (hasBasicAuth() && els.favUser && !sanitizeUsername(els.favUser.value)) {
+      els.favUser.value = basicAuthUsername();
+    }
     updateAuthStatus();
     if (hasBasicAuth()) {
       setStatus("Signed in as " + basicAuthUsername() + ".");
@@ -1766,15 +1774,52 @@ function updateAuthStatus(message, kind) {
     els.authSigned.hidden = !signed;
     els.authSigned.textContent = signed ? "Signed in as " + name : "";
   }
-  if (els.authDetails) {
-    const summary = els.authDetails.querySelector("summary");
-    if (summary) summary.textContent = signed ? "Signed in as " + name : "Optional API key";
-    if (signed) els.authDetails.open = true;
+  if (els.accountBtn) {
+    els.accountBtn.textContent = signed ? name : "Sign in";
+    els.accountBtn.setAttribute("data-signed", signed ? "true" : "false");
+    els.accountBtn.setAttribute("aria-label", signed ? "Account, signed in as " + name : "Sign in");
+  }
+  if (els.accountTitle) els.accountTitle.textContent = signed ? "Account" : "Sign in";
+  if (els.favOpenAccount) els.favOpenAccount.hidden = signed;
+  if (els.favAccountNote) {
+    els.favAccountNote.textContent = signed
+      ? "Signed in as " + name + ". Private favorites use this account. Your e621 account blacklist is not imported; only this site's blacklist and the always-hidden tags apply."
+      : "Use Sign in next to Posts and Pools for private favorites and full API access. Public favorites still work with just a username.";
   }
   if (els.authClear) els.authClear.disabled = !signed;
   if (els.authSave) els.authSave.disabled = Boolean(state.authBusy);
   if (els.authRememberNote) {
     els.authRememberNote.hidden = isStoragePersistent();
+  }
+}
+
+function openAccountDialog() {
+  updateAuthStatus();
+  if (els.authUser && !sanitizeUsername(els.authUser.value)) {
+    const fromFav = sanitizeUsername(els.favUser && els.favUser.value);
+    els.authUser.value = hasBasicAuth() ? basicAuthUsername() : (fromFav || "");
+  }
+  const dialog = els.accountDialog;
+  if (!dialog) return;
+  try {
+    if (typeof dialog.showModal === "function") {
+      if (!dialog.open) dialog.showModal();
+    } else {
+      dialog.setAttribute("open", "");
+    }
+  } catch (error) {
+    dialog.setAttribute("open", "");
+  }
+}
+
+function closeAccountDialog() {
+  const dialog = els.accountDialog;
+  if (!dialog) return;
+  try {
+    if (dialog.open && typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  } catch (error) {
+    dialog.removeAttribute("open");
   }
 }
 
@@ -1846,6 +1891,9 @@ function signOut() {
 }
 
 async function loadFavorites({ page, append }) {
+  if (els.favUser && !sanitizeUsername(els.favUser.value) && hasBasicAuth()) {
+    els.favUser.value = basicAuthUsername();
+  }
   const username = sanitizeUsername(els.favUser && els.favUser.value);
   if (!isValidUsername(username)) {
     setStatus("Enter a valid e621 username to load favorites.", "error");
@@ -2209,6 +2257,14 @@ function bindEvents() {
   }
   if (els.authSave) els.authSave.addEventListener("click", signIn);
   if (els.authClear) els.authClear.addEventListener("click", signOut);
+  if (els.accountBtn) els.accountBtn.addEventListener("click", openAccountDialog);
+  if (els.favOpenAccount) els.favOpenAccount.addEventListener("click", openAccountDialog);
+  if (els.accountClose) els.accountClose.addEventListener("click", closeAccountDialog);
+  if (els.accountDialog) {
+    els.accountDialog.addEventListener("click", function (event) {
+      if (event.target === els.accountDialog) closeAccountDialog();
+    });
+  }
   if (els.authRemember) {
     els.authRemember.addEventListener("change", () => {
       persistAccountIfNeeded();

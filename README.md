@@ -12,7 +12,7 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Posts sub-bar: Hot, Popular, Favorites, Blacklist, and Saved
 - Hot puts `order:hot` in the search bar and runs it
 - Popular: today's popular posts, with a 3×3 control grid (`«prev` / Day, Week, or Month / `next»`) to change the scale and move the date
-- Favorites: look up public favorites with an e621 username (`fav:username`). Optional sign-in with a username and API key for private favorites. Sign-in checks the key with e621 and shows Signed in as your name, or a clear error if the key is rejected, API access is disabled, or the request is blocked. A "Remember my account" checkbox saves the username (and the API key, if you signed in) on this device when storage works
+- Sign in sits on the right of the Posts and Pools bar. It checks your e621 username and API key, then shows your name on that button. Tapping it again opens Sign out. While signed in, every API request includes your key so private favorites and other authenticated features work. A Remember my account checkbox saves the username and key on this device when storage works
 - Pools: search pools, then open one to browse its posts in pool order
 - Blacklist: add and remove your own tags. Hard-exclusion tags are always applied and are not listed as removable
 - Saved searches: store a query such as `canid order:score`, run it later, or delete it
@@ -24,6 +24,10 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 ## Always-on exclusions
 
 Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden, including in favorites, pools, popular, pool covers, and family thumbnails. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every tag query and also filters returned tag lists in the browser. Pools whose names include those terms are not listed. There is no setting or URL parameter to turn this off.
+
+## What signing in changes
+
+e621.net hides some tags from guests with a client-side default blacklist (including gore, snuff, rape, `young -rating:s`, `diaper -rating:s`, feces, urine, fart_fetish, `realistic_feral rating:e`, and politics). The public API does not apply that list, and e621-red does not copy it, so those tags were already visible here whether or not you were signed in. Signing in does not import your e621 account blacklist either. This site's own blacklist, plus the always-hidden tags above, still apply. Signing in mainly adds your API key to every request so you can use private favorites and other authenticated API features.
 
 ## Storage and backups
 

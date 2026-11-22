@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261122h" />
+    <link rel="stylesheet" href="css/styles.css?v=20261122i" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -40,10 +40,13 @@
           <button type="button" id="brand-home" class="brand" aria-label="e621-red, go to recent posts">e621-red</button>
         </h1>
         <div class="top-bar">
-          <nav id="view-nav" class="views" role="tablist" aria-label="Main sections">
-            <button type="button" data-view="posts" aria-selected="true">Posts</button>
-            <button type="button" data-view="pools" aria-selected="false">Pools</button>
-          </nav>
+          <div class="views-row">
+            <nav id="view-nav" class="views" role="tablist" aria-label="Main sections">
+              <button type="button" data-view="posts" aria-selected="true">Posts</button>
+              <button type="button" data-view="pools" aria-selected="false">Pools</button>
+            </nav>
+            <button type="button" id="account-btn" class="account-btn" aria-haspopup="dialog" aria-controls="account-dialog">Sign in</button>
+          </div>
           <form id="search-form" autocomplete="off">
             <div class="search-wrap">
               <label class="sr-only" for="search">Tag search</label>
@@ -110,26 +113,8 @@
             <input id="fav-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" placeholder="username" />
             <button id="fav-load" type="submit">Load favorites</button>
           </div>
-          <p class="muted tight">Public favorites load with just a username. An API key is only needed for private favorites.</p>
-          <label class="check">
-            <input id="auth-remember" type="checkbox" />
-            Remember my account
-          </label>
-          <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
-          <p id="auth-signed" class="auth-signed" hidden></p>
-          <details id="auth-details">
-            <summary>Optional API key</summary>
-            <p class="muted tight">Leave this username blank to use the one above. Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled.</p>
-            <label for="auth-user">Username</label>
-            <input id="auth-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" />
-            <label for="auth-key">API key</label>
-            <input id="auth-key" type="password" autocomplete="off" spellcheck="false" />
-            <div class="inline-row">
-              <button id="auth-save" type="button">Sign in</button>
-              <button id="auth-clear" type="button" class="secondary" disabled>Sign out</button>
-            </div>
-            <p id="auth-status" class="muted tight">Not signed in. Public favorites still work.</p>
-          </details>
+          <p id="fav-account-note" class="muted tight">Use Sign in next to Posts and Pools for private favorites and full API access. Public favorites still work with just a username.</p>
+          <button id="fav-open-account" type="button" class="secondary">Sign in</button>
         </form>
 
         <form id="pools-panel" class="view-panel" hidden>
@@ -241,6 +226,29 @@
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261122h"></script>
+    <dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
+      <div class="panel">
+        <h2 id="account-title">Sign in</h2>
+        <p id="auth-signed" class="auth-signed" hidden></p>
+        <label for="auth-user">Username</label>
+        <input id="auth-user" type="text" spellcheck="false" autocapitalize="none" autocomplete="username" />
+        <label for="auth-key">API key</label>
+        <input id="auth-key" type="password" autocomplete="off" spellcheck="false" />
+        <label class="check">
+          <input id="auth-remember" type="checkbox" />
+          Remember my account
+        </label>
+        <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
+        <p class="muted tight">Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled. Signing in sends your key with every request. This site does not use e621's guest blacklist, and it will not import your e621 account blacklist. young, loli, shota, and cub stay hidden.</p>
+        <div class="inline-row">
+          <button id="auth-save" type="button">Sign in</button>
+          <button id="auth-clear" type="button" class="secondary" disabled>Sign out</button>
+        </div>
+        <p id="auth-status" class="muted tight">Not signed in. Public favorites still work.</p>
+        <button id="account-close" type="button" class="secondary">Close</button>
+      </div>
+    </dialog>
+
+    <script type="module" src="js/app.js?v=20261122i"></script>
   </body>
 </html>

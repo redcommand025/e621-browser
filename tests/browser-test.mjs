@@ -109,6 +109,21 @@ async function waitForCall(listFn, prev, { timeout = 20000, match } = {}) {
 }
 
 
+async function waitForLoggedRequest(page, match, { timeout = 20000, needAuth = null } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const hit = (page.authLog || []).find((item) => {
+      if (!match(item.url)) return false;
+      if (needAuth === true) return item.auth && item.auth.indexOf("Basic ") === 0;
+      if (needAuth === false) return !item.auth;
+      return true;
+    });
+    if (hit) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("timed out waiting for request; log=" + JSON.stringify((page.authLog || []).map((item) => ({ url: item.url, auth: Boolean(item.auth) }))));
+}
+
 async function blockStorageAndPhone(page) {
   await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true });
   await page.setUserAgent(
@@ -640,8 +655,9 @@ try {
       assert.equal(await page.$eval("#saved-storage-note", (el) => !el.hidden), true);
       await page.click("#saved-add");
       await page.waitForFunction(() => [...document.querySelectorAll("#saved-list li")].some((el) => /canid order:score/i.test(el.textContent)));
-      await page.click('[data-sub="favorites"]');
-      await page.waitForSelector("#favorites-panel:not([hidden])");
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
+      assert.equal(await page.$eval("#account-btn", (el) => el.textContent.trim()), "Sign in");
       assert.equal(await page.$eval("#auth-remember-note", (el) => !el.hidden), true);
       assert.equal(await page.$eval("#auth-remember", (el) => el.disabled), false);
       await page.click("#auth-remember");
@@ -1730,14 +1746,24 @@ try {
       await page.goto(base + "/", { waitUntil: "domcontentloaded" });
       await confirmAndUseSafe(page);
       await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
-      await new Promise((resolve) => setTimeout(resolve, 900));
-      await page.click('[data-sub="favorites"]');
-      await page.waitForSelector("#favorites-panel:not([hidden])");
-      await page.$eval("#fav-user", (el) => {
-        el.value = "bitWolfy";
+      const layout = await page.evaluate(() => {
+        const posts = document.querySelector('[data-view="posts"]').getBoundingClientRect();
+        const pools = document.querySelector('[data-view="pools"]').getBoundingClientRect();
+        const acct = document.getElementById("account-btn").getBoundingClientRect();
+        return {
+          sameRow: Math.abs(posts.top - acct.top) < 8,
+          accountRight: acct.left >= pools.right - 1,
+          accountText: document.getElementById("account-btn").textContent.trim(),
+        };
       });
-      await page.$eval("#auth-details", (el) => {
-        el.open = true;
+      assert.equal(layout.accountText, "Sign in");
+      assert.equal(layout.sameRow, true);
+      assert.equal(layout.accountRight, true);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
+      await page.$eval("#auth-user", (el) => {
+        el.value = "bitWolfy";
       });
       await page.$eval("#auth-key", (el) => {
         el.value = "not-a-real-key-000";
@@ -1753,13 +1779,15 @@ try {
         kind: (document.getElementById("auth-status") || {}).getAttribute("data-kind"),
         signedHidden: document.getElementById("auth-signed").hidden,
         signOutDisabled: document.getElementById("auth-clear").disabled,
-        summary: (document.querySelector("#auth-details summary") || {}).textContent.trim(),
+        title: (document.getElementById("account-title") || {}).textContent.trim(),
+        button: (document.getElementById("account-btn") || {}).textContent.trim(),
       }));
       assert.match(rejected.status, /rejected the username or API key/i);
       assert.equal(rejected.kind, "error");
       assert.equal(rejected.signedHidden, true);
       assert.equal(rejected.signOutDisabled, true);
-      assert.equal(rejected.summary, "Optional API key");
+      assert.equal(rejected.title, "Sign in");
+      assert.equal(rejected.button, "Sign in");
       log("PASS fake API key is rejected with a clear 401 message");
     }
   );
@@ -1810,13 +1838,10 @@ try {
       await page.goto(base + "/", { waitUntil: "domcontentloaded" });
       await confirmAndUseSafe(page);
       await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
-      await page.click('[data-sub="favorites"]');
-      await page.waitForSelector("#favorites-panel:not([hidden])");
-      await page.$eval("#fav-user", (el) => {
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
+      await page.$eval("#auth-user", (el) => {
         el.value = "mock_user";
-      });
-      await page.$eval("#auth-details", (el) => {
-        el.open = true;
       });
       await page.$eval("#auth-key", (el) => {
         el.value = "good-key-for-mock";
@@ -1825,13 +1850,15 @@ try {
       await clickSelector(page, "#auth-save");
       await page.waitForFunction(() => {
         const signed = document.getElementById("auth-signed");
-        return signed && !signed.hidden && /Signed in as mock_user/.test(signed.textContent);
+        const btn = document.getElementById("account-btn");
+        return signed && !signed.hidden && /Signed in as mock_user/.test(signed.textContent) && btn && btn.textContent.trim() === "mock_user";
       }, { timeout: 20000 });
       const signed = await page.evaluate(() => ({
         badge: (document.getElementById("auth-signed") || {}).textContent.trim(),
         status: (document.getElementById("auth-status") || {}).textContent.trim(),
         kind: (document.getElementById("auth-status") || {}).getAttribute("data-kind"),
-        summary: (document.querySelector("#auth-details summary") || {}).textContent.trim(),
+        title: (document.getElementById("account-title") || {}).textContent.trim(),
+        button: (document.getElementById("account-btn") || {}).textContent.trim(),
         signOutDisabled: document.getElementById("auth-clear").disabled,
         keyCleared: document.getElementById("auth-key").value === "",
         remember: document.getElementById("auth-remember").checked,
@@ -1841,27 +1868,213 @@ try {
       assert.match(signed.status, /Signed in as mock_user/);
       assert.match(signed.status, /until this tab closes/);
       assert.equal(signed.kind, "ok");
-      assert.equal(signed.summary, "Signed in as mock_user");
+      assert.equal(signed.title, "Account");
+      assert.equal(signed.button, "mock_user");
       assert.equal(signed.signOutDisabled, false);
       assert.equal(signed.keyCleared, true);
       assert.equal(signed.remember, true);
       assert.equal(signed.rememberNote, true);
+      await clickSelector(page, "#account-close");
+      await page.waitForFunction(() => !document.getElementById("account-dialog").open, { timeout: 5000 });
       await page.click('[data-sub="hot"]');
-      await page.waitForSelector("#favorites-panel[hidden]");
       await page.click('[data-sub="favorites"]');
       await page.waitForSelector("#favorites-panel:not([hidden])");
       const still = await page.evaluate(() => ({
-        badge: (document.getElementById("auth-signed") || {}).textContent.trim(),
-        hidden: document.getElementById("auth-signed").hidden,
+        button: (document.getElementById("account-btn") || {}).textContent.trim(),
+        favUser: (document.getElementById("fav-user") || {}).value,
         pageStatus: (document.getElementById("status") || {}).textContent.trim(),
+        favOpenHidden: document.getElementById("fav-open-account").hidden,
       }));
-      assert.equal(still.hidden, false);
-      assert.equal(still.badge, "Signed in as mock_user");
+      assert.equal(still.button, "mock_user");
+      assert.equal(still.favUser, "mock_user");
       assert.match(still.pageStatus, /Signed in as mock_user/);
+      assert.equal(still.favOpenHidden, true);
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
       await clickSelector(page, "#auth-clear");
-      await page.waitForFunction(() => document.getElementById("auth-signed").hidden, { timeout: 5000 });
+      await page.waitForFunction(() => document.getElementById("auth-signed").hidden && document.getElementById("account-btn").textContent.trim() === "Sign in", { timeout: 5000 });
       assert.equal(await page.$eval("#auth-clear", (el) => el.disabled), true);
       log("PASS mocked sign-in shows Signed in as X, survives view changes with blocked storage, and signs out");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+      const cors = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization, accept",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+      };
+      const parentPost = {
+        id: 100,
+        rating: "s",
+        tags: { general: ["canine"], artist: ["tester"] },
+        flags: {},
+        stats: { fav_count: 1, score: { total: 1 } },
+        relationships: { parent_id: null, children: [101] },
+        has: { children: true, active_children: true, parent: false },
+        file: { url: "https://example.invalid/file.png", ext: "png" },
+        files: {
+          original: { url: "https://example.invalid/file.png" },
+          preview: { url: "https://example.invalid/preview.png" },
+        },
+      };
+      const childPost = {
+        id: 101,
+        rating: "s",
+        tags: { general: ["canine"] },
+        flags: {},
+        stats: { fav_count: 0, score: { total: 0 } },
+        relationships: { parent_id: 100, children: [] },
+        has: { children: false, active_children: false, parent: true },
+        file: { url: "https://example.invalid/child.png", ext: "png" },
+        files: {
+          original: { url: "https://example.invalid/child.png" },
+          preview: { url: "https://example.invalid/child.png" },
+        },
+      };
+      await page.setRequestInterception(true);
+      page.authLog = [];
+      page.on("request", (request) => {
+        const url = request.url();
+        if (!url.startsWith("https://e621.net/")) {
+          request.continue();
+          return;
+        }
+        if (request.method() === "OPTIONS") {
+          request.respond({ status: 204, headers: cors, body: "" });
+          return;
+        }
+        const auth = request.headers().authorization || "";
+        page.authLog.push({ url: url, auth: auth });
+        if (/\/users\/mock_user\.json/.test(url)) {
+          request.respond({
+            status: auth.indexOf("Basic ") === 0 ? 200 : 401,
+            contentType: "application/json",
+            headers: cors,
+            body: JSON.stringify(auth.indexOf("Basic ") === 0 ? { name: "mock_user", id: 42 } : { success: false, message: "SessionLoader::AuthenticationFailure" }),
+          });
+          return;
+        }
+        if (url.includes("/popular.json")) {
+          request.respond({ status: 200, contentType: "application/json", headers: cors, body: JSON.stringify({ posts: [parentPost] }) });
+          return;
+        }
+        if (url.includes("/pools.json")) {
+          request.respond({ status: 200, contentType: "application/json", headers: cors, body: JSON.stringify([{ id: 1, name: "Safe_Pool", post_ids: [100], post_count: 1 }]) });
+          return;
+        }
+        if (url.includes("/tags/")) {
+          request.respond({ status: 200, contentType: "application/json", headers: cors, body: JSON.stringify([{ name: "canine", post_count: 10 }]) });
+          return;
+        }
+        if (url.includes("/posts.json")) {
+          const tags = decodeURIComponent(new URL(url).searchParams.get("tags") || "");
+          const idMatch = tags.match(/(?:^|\s)id:([0-9,]+)/);
+          let posts = [parentPost];
+          if (idMatch) {
+            const want = idMatch[1].split(",").map(Number);
+            posts = [parentPost, childPost].filter((post) => want.indexOf(post.id) !== -1);
+          }
+          request.respond({ status: 200, contentType: "application/json", headers: cors, body: JSON.stringify(posts) });
+          return;
+        }
+        request.respond({ status: 200, contentType: "application/json", headers: cors, body: "[]" });
+      });
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const beforeSignIn = page.authLog.filter((item) => item.url.includes("/posts.json"));
+      assert.ok(beforeSignIn.length > 0, "expected an anonymous posts request");
+      assert.equal(beforeSignIn.every((item) => !item.auth), true, "anonymous posts must not send Authorization");
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
+      await page.$eval("#auth-user", (el) => { el.value = "mock_user"; });
+      await page.$eval("#auth-key", (el) => { el.value = "good-key-for-mock"; });
+      const beforeVerify = page.authLog.length;
+      await clickSelector(page, "#auth-save");
+      await page.waitForFunction(() => document.getElementById("account-btn").textContent.trim() === "mock_user", { timeout: 20000 });
+      await clickSelector(page, "#account-close");
+      await page.waitForFunction(() => !document.getElementById("account-dialog").open, { timeout: 5000 });
+
+      page.authLog.length = 0;
+      await page.$eval("#search", (el) => { el.value = "canine"; });
+      await page.click("#search-form button[type=submit]");
+      await waitForLoggedRequest(page, (url) => url.includes("/posts.json") && /canine/.test(decodeURIComponent(new URL(url).searchParams.get("tags") || "")), { needAuth: true });
+
+      await page.click('[data-sub="popular"]');
+      await page.waitForSelector("#popular-panel:not([hidden])");
+      await waitForLoggedRequest(page, (url) => url.includes("/popular.json"), { needAuth: true });
+
+      await page.click('[data-view="pools"]');
+      await page.waitForSelector("#pools-panel:not([hidden])");
+      await waitForLoggedRequest(page, (url) => url.includes("/pools.json"), { needAuth: true });
+
+      await page.click('[data-view="posts"]');
+      await page.waitForSelector("#search");
+      await page.click("#search");
+      await page.type("#search", "fox", { delay: 40 });
+      await waitForLoggedRequest(page, (url) => url.includes("/tags/"), { needAuth: true });
+
+      await page.click('[data-sub="favorites"]');
+      await page.waitForSelector("#favorites-panel:not([hidden])");
+      await page.click("#fav-load");
+      await waitForLoggedRequest(page, (url) => url.includes("/posts.json") && /fav:mock_user/.test(decodeURIComponent(new URL(url).searchParams.get("tags") || "")), { needAuth: true });
+
+      await page.click('[data-view="posts"]');
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      await clickSelector(page, '#grid .thumb img[alt="Post 100"]');
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await waitForLoggedRequest(page, (url) => {
+        if (!url.includes("/posts.json")) return false;
+        const tags = decodeURIComponent(new URL(url).searchParams.get("tags") || "");
+        return /(?:^|\s)id:101(?:\s|,|$)/.test(tags);
+      }, { needAuth: true });
+      await page.waitForFunction(() => {
+        const family = document.getElementById("viewer-family");
+        return family && !family.hidden && family.querySelector(".family-thumb");
+      }, { timeout: 20000 });
+
+      const kinds = { posts: false, popular: false, pools: false, tags: false, favorites: false, family: false, users: false };
+      for (const item of page.authLog) {
+        if (!item.auth || item.auth.indexOf("Basic ") !== 0) continue;
+        if (item.url.includes("/popular.json")) kinds.popular = true;
+        else if (item.url.includes("/pools.json")) kinds.pools = true;
+        else if (item.url.includes("/tags/")) kinds.tags = true;
+        else if (item.url.includes("/users/")) kinds.users = true;
+        else if (item.url.includes("/posts.json")) {
+          const tags = decodeURIComponent(new URL(item.url).searchParams.get("tags") || "");
+          if (/(^|\s)fav:mock_user(\s|$)/.test(tags)) kinds.favorites = true;
+          if (/(^|\s)id:101(\s|$)/.test(tags) || /(^|\s)id:101,/.test(tags)) kinds.family = true;
+          if (!/(^|\s)fav:/.test(tags)) kinds.posts = true;
+        }
+      }
+      assert.equal(kinds.posts, true, "signed-in posts request missing Authorization");
+      assert.equal(kinds.popular, true, "signed-in popular request missing Authorization");
+      assert.equal(kinds.pools, true, "signed-in pools request missing Authorization");
+      assert.equal(kinds.tags, true, "signed-in autocomplete request missing Authorization");
+      assert.equal(kinds.favorites, true, "signed-in favorites request missing Authorization");
+      assert.equal(kinds.family, true, "signed-in family request missing Authorization");
+
+      await clickSelector(page, "#viewer-close");
+      await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 5000 });
+      await page.click("#account-btn");
+      await page.waitForSelector("#account-dialog[open]");
+      await clickSelector(page, "#auth-clear");
+      await page.waitForFunction(() => document.getElementById("account-btn").textContent.trim() === "Sign in", { timeout: 5000 });
+      await clickSelector(page, "#account-close");
+      page.authLog.length = 0;
+      await page.click('[data-view="posts"]');
+      await page.waitForFunction(() => /posts loaded|canine/i.test((document.getElementById("status") || {}).textContent || ""), { timeout: 20000 });
+      const after = page.authLog.filter((item) => item.url.includes("e621.net") && item.url.includes(".json"));
+      assert.ok(after.length > 0, "expected a request after sign-out");
+      assert.equal(after.every((item) => !item.auth), true, "Authorization must be absent after sign-out: " + after.map((item) => item.url).join(" | "));
+      log("PASS signed-in Authorization is sent on posts, popular, pools, autocomplete, favorites, and family, and is cleared after sign-out");
     }
   );
 
