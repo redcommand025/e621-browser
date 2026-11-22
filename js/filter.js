@@ -312,3 +312,41 @@ export function postPoolIds(post) {
   }
   return out;
 }
+
+export function poolIdStatus(statusMap, id) {
+  if (!statusMap) return "";
+  const value = statusMap[String(id)];
+  return value ? String(value) : "";
+}
+
+export function poolDirectionOpen(ids, fromIndex, direction, statusMap) {
+  const list = Array.isArray(ids) ? ids : [];
+  const dir = direction < 0 ? -1 : 1;
+  let i = Number(fromIndex);
+  if (!Number.isFinite(i)) i = dir < 0 ? list.length : -1;
+  for (i = i + dir; i >= 0 && i < list.length; i += dir) {
+    const id = Number(list[i]);
+    if (!Number.isFinite(id)) continue;
+    if (poolIdStatus(statusMap, id) !== "blocked") return true;
+  }
+  return false;
+}
+
+export function stepPoolIds(ids, fromIndex, direction, statusMap, batchSize) {
+  const list = Array.isArray(ids) ? ids : [];
+  const dir = direction < 0 ? -1 : 1;
+  const size = Math.max(1, Number(batchSize) || 8);
+  const need = [];
+  let i = Number(fromIndex);
+  if (!Number.isFinite(i)) i = dir < 0 ? list.length : -1;
+  for (i = i + dir; i >= 0 && i < list.length; i += dir) {
+    const id = Number(list[i]);
+    if (!Number.isFinite(id)) continue;
+    const status = poolIdStatus(statusMap, id);
+    if (status === "ok") return { index: i, id: id, need: [] };
+    if (status === "blocked") continue;
+    need.push(id);
+    if (need.length >= size) break;
+  }
+  return { index: -1, id: null, need: need };
+}

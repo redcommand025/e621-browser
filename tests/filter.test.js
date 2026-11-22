@@ -15,8 +15,10 @@ import {
   formatPoolName,
   isValidUsername,
   nameContainsBlockedTerm,
+  poolDirectionOpen,
   postPoolIds,
   sanitizeUsername,
+  stepPoolIds,
   shouldExcludePost,
 } from "../js/filter.js";
 
@@ -239,4 +241,21 @@ test("formatPoolName and postPoolIds skip blocked pool names only at the name ch
   assert.deepEqual(postPoolIds({ pools: [12, "12", 15] }), [12, 15]);
   assert.equal(nameContainsBlockedTerm("young_fox_pool"), true);
   assert.equal(nameContainsBlockedTerm("Safety_Plan"), false);
+});
+
+test("stepPoolIds walks around blocked neighbors and reports unknown ids", () => {
+  const ids = [10, 20, 30, 40, 50];
+  const status = { 20: "blocked", 30: "ok" };
+  assert.deepEqual(stepPoolIds(ids, 0, 1, status, 8), { index: 2, id: 30, need: [] });
+  assert.equal(poolDirectionOpen(ids, 0, 1, status), true);
+  assert.equal(poolDirectionOpen(ids, 0, -1, status), false);
+
+  const unknown = stepPoolIds(ids, 2, 1, status, 2);
+  assert.deepEqual(unknown, { index: -1, id: null, need: [40, 50] });
+  assert.equal(poolDirectionOpen(ids, 2, 1, status), true);
+
+  const allBlocked = { 10: "blocked", 20: "blocked" };
+  assert.deepEqual(stepPoolIds([10, 20], 1, -1, allBlocked, 8), { index: -1, id: null, need: [] });
+  assert.equal(poolDirectionOpen([10, 20], 1, -1, allBlocked), false);
+  assert.equal(poolDirectionOpen([10, 20], 0, 1, { 20: "ok" }), true);
 });

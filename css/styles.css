@@ -694,12 +694,17 @@ button.viewer-brand:focus-visible {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 6px;
   align-items: stretch;
-  padding: 0 8px 6px;
+  padding: 0 8px 4px;
   background: #161616;
   border-bottom: 1px solid #2a2a2a;
 }
 
-#viewer-context-btn {
+.viewer-context + .viewer-context {
+  padding-top: 2px;
+}
+
+#viewer-context-btn,
+#viewer-pool-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

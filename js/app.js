@@ -9,7 +9,9 @@ import {
   isBlockedTag,
   isValidUsername,
   nameContainsBlockedTerm,
+  poolDirectionOpen,
   postPoolIds,
+  stepPoolIds,
   sanitizeUsername,
   tagName,
   tokenize,
@@ -95,6 +97,11 @@ const els = {
   viewerMeta: document.getElementById("viewer-meta"),
   viewerAlts: document.getElementById("viewer-alts"),
   viewerContextBtn: document.getElementById("viewer-context-btn"),
+  viewerSearchBar: document.getElementById("viewer-search-bar"),
+  viewerPoolBar: document.getElementById("viewer-pool-bar"),
+  viewerPoolPrev: document.getElementById("viewer-pool-prev"),
+  viewerPoolName: document.getElementById("viewer-pool-name"),
+  viewerPoolNext: document.getElementById("viewer-pool-next"),
   viewerTags: document.getElementById("viewer-tags"),
   brandHome: document.getElementById("brand-home"),
   viewerBrandHome: document.getElementById("viewer-brand-home"),
@@ -146,6 +153,13 @@ const state = {
   popularAll: [],
   poolCache: {},
   contextSeq: 0,
+  viewerSource: "search",
+  viewerPost: null,
+  viewerPool: null,
+  poolPostStatus: {},
+  poolPostCache: {},
+  poolNavLoading: false,
+  poolNavSeq: 0,
 };
 
 function parseStoredList(raw, asTags = false) {
@@ -612,8 +626,13 @@ function atViewerEnd() {
 }
 
 function updateViewerNav() {
-  const disablePrev = atViewerStart() || state.loading;
-  const disableNext = atViewerEnd() || state.loading;
+  syncSearchBarVisibility();
+  const post = currentViewerPost();
+  const idx = searchIndexOfPost(post);
+  if (idx >= 0) state.activeIndex = idx;
+  const usable = searchNavAvailable();
+  const disablePrev = !usable || atViewerStart() || state.loading;
+  const disableNext = !usable || atViewerEnd() || state.loading;
   if (els.viewerPrev) els.viewerPrev.disabled = disablePrev;
   if (els.viewerNext) els.viewerNext.disabled = disableNext;
 }
@@ -621,6 +640,47 @@ function updateViewerNav() {
 function currentUserSearchLabel() {
   const text = els.search && els.search.value ? String(els.search.value).trim() : "";
   return text;
+}
+
+function currentViewerPost() {
+  if (state.viewerPost) return state.viewerPost;
+  if (state.activeIndex >= 0 && state.posts[state.activeIndex]) return state.posts[state.activeIndex];
+  return null;
+}
+
+function searchIndexOfPost(post) {
+  if (!post) return -1;
+  const id = Number(post.id);
+  for (let i = 0; i < state.posts.length; i++) {
+    if (state.posts[i] && Number(state.posts[i].id) === id) return i;
+  }
+  return -1;
+}
+
+function searchNavAvailable() {
+  if (state.viewerSource === "pools") return false;
+  return searchIndexOfPost(currentViewerPost()) >= 0;
+}
+
+function setBarsMode(mode) {
+  if (els.viewer) els.viewer.dataset.bars = mode;
+}
+
+function syncSearchBarVisibility() {
+  if (els.viewerSearchBar) els.viewerSearchBar.hidden = state.viewerSource === "pools";
+}
+
+function markPoolPostStatus(id, status) {
+  if (!state.poolPostStatus) state.poolPostStatus = {};
+  if (id == null) return;
+  state.poolPostStatus[String(id)] = status;
+}
+
+function cachePoolPost(post) {
+  if (!post || post.id == null) return;
+  if (!state.poolPostCache) state.poolPostCache = {};
+  state.poolPostCache[String(post.id)] = post;
+  markPoolPostStatus(post.id, "ok");
 }
 
 function setContextSearchLabel() {
@@ -632,15 +692,55 @@ function setContextSearchLabel() {
   els.viewerContextBtn.title = els.viewerContextBtn.textContent;
 }
 
-function setContextPoolLabel(pool) {
-  if (!els.viewerContextBtn || !pool || nameContainsBlockedTerm(pool.name)) return false;
+function currentPoolIds() {
+  if (state.viewerPool && Array.isArray(state.viewerPool.post_ids) && state.viewerPool.post_ids.length) {
+    return state.viewerPool.post_ids;
+  }
+  if (Array.isArray(state.poolIds) && state.poolIds.length) return state.poolIds;
+  return [];
+}
+
+function currentPoolIndex() {
+  const post = currentViewerPost();
+  if (!post) return -1;
+  const id = Number(post.id);
+  const ids = currentPoolIds();
+  for (let i = 0; i < ids.length; i++) {
+    if (Number(ids[i]) === id) return i;
+  }
+  return -1;
+}
+
+function setViewerPool(pool) {
+  if (!pool || nameContainsBlockedTerm(pool.name) || !formatPoolName(pool.name)) {
+    state.viewerPool = null;
+    if (els.viewerPoolBar) els.viewerPoolBar.hidden = true;
+    if (els.viewerPoolName) {
+      els.viewerPoolName.textContent = "Pool";
+      els.viewerPoolName.removeAttribute("data-pool-id");
+    }
+    updatePoolNavButtons();
+    return false;
+  }
+  cachePool(pool);
+  state.viewerPool = pool;
   const name = formatPoolName(pool.name);
-  if (!name) return false;
-  els.viewerContextBtn.textContent = name;
-  els.viewerContextBtn.dataset.kind = "pool";
-  els.viewerContextBtn.dataset.poolId = String(pool.id);
-  els.viewerContextBtn.title = name;
+  if (els.viewerPoolBar) els.viewerPoolBar.hidden = false;
+  if (els.viewerPoolName) {
+    els.viewerPoolName.textContent = name;
+    els.viewerPoolName.dataset.poolId = String(pool.id);
+    els.viewerPoolName.title = name;
+  }
+  updatePoolNavButtons();
   return true;
+}
+
+function readyBarsMode() {
+  const searchVisible = !(els.viewerSearchBar && els.viewerSearchBar.hidden);
+  const poolVisible = !!(state.viewerPool && els.viewerPoolBar && !els.viewerPoolBar.hidden);
+  if (searchVisible && poolVisible) setBarsMode("both");
+  else if (poolVisible) setBarsMode("pool");
+  else setBarsMode("search");
 }
 
 function cachePool(pool) {
@@ -656,24 +756,44 @@ function cachedPool(id) {
 
 function updateViewerContext(post) {
   setContextSearchLabel();
+  syncSearchBarVisibility();
   const seq = (state.contextSeq = (state.contextSeq || 0) + 1);
-  const openedFrom = state.view === "pools" && state.activePool ? state.activePool : null;
-  if (openedFrom && setContextPoolLabel(openedFrom)) {
-    cachePool(openedFrom);
+  const openedFrom = state.viewerSource === "pools" && (state.activePool || state.viewerPool);
+  if (openedFrom && setViewerPool(openedFrom)) {
+    readyBarsMode();
     return;
   }
   const ids = postPoolIds(post);
-  if (!ids.length) return;
+  if (!ids.length) {
+    setViewerPool(null);
+    readyBarsMode();
+    return;
+  }
+  if (state.viewerPool && ids.indexOf(Number(state.viewerPool.id)) !== -1) {
+    setViewerPool(state.viewerPool);
+    readyBarsMode();
+    return;
+  }
   const pending = [];
-  for (const id of ids) {
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
     const cached = cachedPool(id);
     if (cached) {
-      if (setContextPoolLabel(cached)) return;
+      if (setViewerPool(cached)) {
+        readyBarsMode();
+        return;
+      }
       continue;
     }
     pending.push(id);
   }
-  if (!pending.length) return;
+  if (!pending.length) {
+    setViewerPool(null);
+    readyBarsMode();
+    return;
+  }
+  setViewerPool(null);
+  setBarsMode("pending");
   loadPoolsForContext(pending, seq);
 }
 
@@ -697,12 +817,144 @@ function loadPoolsForContext(ids, seq) {
       return next(0);
     })
     .then(function (pool) {
-      if (!pool || seq !== state.contextSeq) return;
-      setContextPoolLabel(pool);
+      if (seq !== state.contextSeq) return;
+      if (pool) setViewerPool(pool);
+      else setViewerPool(null);
+      readyBarsMode();
     })
     .catch(function (error) {
       if (error && error.name === "AbortError") return;
       console.error(error);
+      if (seq === state.contextSeq) {
+        setViewerPool(null);
+        readyBarsMode();
+      }
+    });
+}
+
+function updatePoolNavButtons() {
+  const ids = currentPoolIds();
+  const from = currentPoolIndex();
+  const loading = !!state.poolNavLoading;
+  const hasPool = !!state.viewerPool && !(els.viewerPoolBar && els.viewerPoolBar.hidden);
+  const disablePrev = !hasPool || loading || from < 0 || !poolDirectionOpen(ids, from, -1, state.poolPostStatus);
+  const disableNext = !hasPool || loading || from < 0 || !poolDirectionOpen(ids, from, 1, state.poolPostStatus);
+  if (els.viewerPoolPrev) els.viewerPoolPrev.disabled = disablePrev;
+  if (els.viewerPoolNext) els.viewerPoolNext.disabled = disableNext;
+}
+
+function showViewerPost(post) {
+  if (!post) return;
+  state.viewerPost = post;
+  cachePoolPost(post);
+  const idx = searchIndexOfPost(post);
+  if (idx >= 0) state.activeIndex = idx;
+  renderViewer();
+}
+
+function stepPool(delta) {
+  if (state.poolNavLoading) return Promise.resolve();
+  if (!state.viewerPool) return Promise.resolve();
+  const ids = currentPoolIds();
+  const from = currentPoolIndex();
+  const dir = delta < 0 ? -1 : 1;
+  return walkPool(ids, from, dir, {});
+}
+
+function walkPool(ids, from, dir, attempted) {
+  const stepped = stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
+  if (stepped.id != null) {
+    const cached = state.poolPostCache && state.poolPostCache[String(stepped.id)];
+    if (cached) {
+      showViewerPost(cached);
+      return Promise.resolve();
+    }
+    stepped.need = [stepped.id];
+  }
+  const need = [];
+  const seen = attempted || {};
+  const list = stepped.need || [];
+  for (let i = 0; i < list.length; i++) {
+    const key = String(list[i]);
+    if (seen[key]) continue;
+    seen[key] = true;
+    need.push(list[i]);
+  }
+  if (!need.length) {
+    updatePoolNavButtons();
+    return Promise.resolve();
+  }
+  const seq = (state.poolNavSeq = (state.poolNavSeq || 0) + 1);
+  state.poolNavLoading = true;
+  updatePoolNavButtons();
+  return fetchPostsByIds(need, { extraTags: exclusionTagString() })
+    .then(function (posts) {
+      if (seq !== state.poolNavSeq) return;
+      const allowed = clientFilter(posts || []);
+      const allowedIds = {};
+      for (let i = 0; i < allowed.length; i++) {
+        allowedIds[String(allowed[i].id)] = allowed[i];
+        cachePoolPost(allowed[i]);
+      }
+      for (let i = 0; i < need.length; i++) {
+        if (!allowedIds[String(need[i])]) markPoolPostStatus(need[i], "blocked");
+      }
+      const again = stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
+      if (again.id != null && state.poolPostCache && state.poolPostCache[String(again.id)]) {
+        showViewerPost(state.poolPostCache[String(again.id)]);
+        return;
+      }
+      if (again.need && again.need.length) {
+        state.poolNavLoading = false;
+        return walkPool(ids, from, dir, seen);
+      }
+    })
+    .catch(function (error) {
+      if (error && error.name === "AbortError") return;
+      console.error(error);
+      setStatus((error && error.message) || "Could not load that pool post.", "error");
+    })
+    .then(function () {
+      if (seq === state.poolNavSeq) {
+        state.poolNavLoading = false;
+        updatePoolNavButtons();
+      }
+    });
+}
+
+function activateViewerContext() {
+  closeViewer();
+}
+
+function activateViewerPool() {
+  if (!els.viewerPoolName) return;
+  const id = Number(els.viewerPoolName.dataset.poolId);
+  const current = state.viewerPool && Number(state.viewerPool.id) === id ? state.viewerPool : cachedPool(id);
+  closeViewer();
+  if (current && !nameContainsBlockedTerm(current.name)) {
+    if (state.view === "pools" && state.activePool && Number(state.activePool.id) === id) return;
+    setView("pools");
+    openPool(current);
+    return;
+  }
+  if (!Number.isFinite(id)) return;
+  setView("pools");
+  beginLoad("Loading pool…");
+  fetchPoolById(id)
+    .then(function (pool) {
+      if (!pool || nameContainsBlockedTerm(pool.name)) {
+        setStatus("That pool is not available.", "warn");
+        finishLoad();
+        return;
+      }
+      cachePool(pool);
+      finishLoad();
+      openPool(pool);
+    })
+    .catch(function (error) {
+      if (error && error.name === "AbortError") return;
+      setStatus((error && error.message) || "Could not open that pool.", "error", { retry: true });
+      finishLoad();
     });
 }
 
@@ -776,45 +1028,11 @@ function applyTagToSearch(mode, raw) {
   searchFromStart();
 }
 
-function activateViewerContext() {
-  if (!els.viewerContextBtn) return;
-  if (els.viewerContextBtn.dataset.kind === "pool") {
-    const id = Number(els.viewerContextBtn.dataset.poolId);
-    const current = state.activePool && Number(state.activePool.id) === id ? state.activePool : cachedPool(id);
-    closeViewer();
-    if (current && !nameContainsBlockedTerm(current.name)) {
-      if (state.view === "pools" && state.activePool && Number(state.activePool.id) === id) return;
-      setView("pools");
-      openPool(current);
-      return;
-    }
-    if (!Number.isFinite(id)) return;
-    setView("pools");
-    beginLoad("Loading pool…");
-    fetchPoolById(id)
-      .then(function (pool) {
-        if (!pool || nameContainsBlockedTerm(pool.name)) {
-          setStatus("That pool is not available.", "warn");
-          finishLoad();
-          return;
-        }
-        cachePool(pool);
-        finishLoad();
-        openPool(pool);
-      })
-      .catch(function (error) {
-        if (error && error.name === "AbortError") return;
-        setStatus((error && error.message) || "Could not open that pool.", "error", { retry: true });
-        finishLoad();
-      });
-    return;
-  }
-  closeViewer();
-}
-
 function renderViewer() {
-  const post = state.posts[state.activeIndex];
+  const post = currentViewerPost();
   if (!post) return;
+  state.viewerPost = post;
+  cachePoolPost(post);
   if (els.viewerOpen) els.viewerOpen.href = postPageUrl(post);
   if (els.viewerMeta) {
     els.viewerMeta.textContent = "#" + post.id + " · " + String(post.rating || "").toUpperCase();
@@ -823,6 +1041,7 @@ function renderViewer() {
   updateQualityButton(post);
   renderViewerTags(post);
   updateViewerContext(post);
+  updatePoolNavButtons();
   if (isVideoPost(post)) {
     const sources = videoSources(post);
     const chosen =
@@ -843,6 +1062,11 @@ function renderViewer() {
 
 function openViewer(index) {
   state.activeIndex = index;
+  state.viewerSource = state.view === "pools" && state.activePool ? "pools" : "search";
+  state.viewerPost = state.posts[index] || null;
+  if (state.viewerSource === "pools") state.viewerPool = state.activePool;
+  else state.viewerPool = null;
+  setBarsMode("pending");
   renderViewer();
   if (typeof els.viewer.showModal === "function") els.viewer.showModal();
   else els.viewer.setAttribute("open", "");
@@ -862,9 +1086,14 @@ function closeViewer() {
 
 function stepViewer(delta) {
   if (state.loading) return Promise.resolve();
+  if (!searchNavAvailable() && searchIndexOfPost(currentViewerPost()) < 0) {
+    updateViewerNav();
+    return Promise.resolve();
+  }
   const next = state.activeIndex + delta;
   if (next >= 0 && next < state.posts.length) {
     state.activeIndex = next;
+    state.viewerPost = state.posts[next];
     renderViewer();
     return Promise.resolve();
   }
@@ -874,6 +1103,7 @@ function stepViewer(delta) {
     return Promise.resolve(reloadCurrent({ page: state.page + 1, append: true })).then(function () {
       if (state.posts.length > from) {
         state.activeIndex = from;
+        state.viewerPost = state.posts[from];
         renderViewer();
       } else {
         updateViewerNav();
@@ -885,6 +1115,7 @@ function stepViewer(delta) {
     return Promise.resolve(reloadCurrent({ page: state.page - 1, append: false })).then(function () {
       if (state.posts.length) {
         state.activeIndex = state.posts.length - 1;
+        state.viewerPost = state.posts[state.activeIndex];
         renderViewer();
         if (els.viewer && !els.viewer.open) openViewer(state.activeIndex);
       } else {
@@ -893,6 +1124,12 @@ function stepViewer(delta) {
     });
   }
   updateViewerNav();
+  return Promise.resolve();
+}
+
+function stepActiveViewer(delta) {
+  if (searchNavAvailable()) return stepViewer(delta);
+  if (state.viewerPool) return stepPool(delta);
   return Promise.resolve();
 }
 
@@ -918,7 +1155,7 @@ function bindViewerSwipe() {
       const dx = event.changedTouches[0].clientX - startX;
       const dy = event.changedTouches[0].clientY - startY;
       if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
-      stepViewer(dx < 0 ? 1 : -1);
+      stepActiveViewer(dx < 0 ? 1 : -1);
     },
     { passive: true }
   );
@@ -1704,6 +1941,9 @@ function bindEvents() {
   if (els.viewerContextBtn) {
     els.viewerContextBtn.addEventListener("click", activateViewerContext);
   }
+  if (els.viewerPoolPrev) els.viewerPoolPrev.addEventListener("click", function () { stepPool(-1); });
+  if (els.viewerPoolNext) els.viewerPoolNext.addEventListener("click", function () { stepPool(1); });
+  if (els.viewerPoolName) els.viewerPoolName.addEventListener("click", activateViewerPool);
   els.viewerQuality.addEventListener("click", () => {
     els.preferSample.checked = !els.preferSample.checked;
     els.preferSample.dispatchEvent(new Event("change"));
@@ -1715,8 +1955,8 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (!els.viewer.open) return;
     if (event.key === "Escape") closeViewer();
-    if (event.key === "ArrowLeft") stepViewer(-1);
-    if (event.key === "ArrowRight") stepViewer(1);
+    if (event.key === "ArrowLeft") stepActiveViewer(-1);
+    if (event.key === "ArrowRight") stepActiveViewer(1);
   });
   bindViewerSwipe();
   bindInfiniteScroll();

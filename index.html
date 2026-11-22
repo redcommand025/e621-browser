@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261122b" />
+    <link rel="stylesheet" href="css/styles.css?v=20261122c" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -222,10 +222,15 @@
           <a id="viewer-open" href="#" target="_blank" rel="noopener noreferrer">Open on e621</a>
           <span id="viewer-meta"></span>
         </div>
-        <div class="viewer-context">
+        <div id="viewer-search-bar" class="viewer-context">
           <button id="viewer-prev" type="button">&lt;Prev</button>
           <button id="viewer-context-btn" type="button">Search: (none)</button>
           <button id="viewer-next" type="button">Next&gt;</button>
+        </div>
+        <div id="viewer-pool-bar" class="viewer-context" hidden>
+          <button id="viewer-pool-prev" type="button">&lt;Prev</button>
+          <button id="viewer-pool-name" type="button">Pool</button>
+          <button id="viewer-pool-next" type="button">Next&gt;</button>
         </div>
       </div>
       <div id="viewer-stage" class="viewer-stage"></div>
@@ -233,6 +238,6 @@
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261122b"></script>
+    <script type="module" src="js/app.js?v=20261122c"></script>
   </body>
 </html>

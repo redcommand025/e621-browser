@@ -98,6 +98,22 @@ async function waitForCall(listFn, prev, { timeout = 20000, match } = {}) {
   throw new Error("timed out waiting for API call");
 }
 
+
+async function blockStorageAndPhone(page) {
+  await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true });
+  await page.setUserAgent(
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
+  );
+  await page.evaluateOnNewDocument(() => {
+    const boom = () => { throw new Error("storage blocked"); };
+    const fake = {
+      getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom,
+      get length() { throw new Error("storage blocked"); },
+    };
+    Object.defineProperty(window, "localStorage", { get: () => fake });
+  });
+}
+
 async function confirmAndUseSafe(page) {
   await page.waitForSelector("#age-confirm");
   assert.equal(await page.$eval("#app", (el) => el.hidden), true);
@@ -919,10 +935,7 @@ try {
     browser,
     base,
     async (page) => {
-      await page.setViewport({ width: 360, height: 740, isMobile: true, hasTouch: true });
-      await page.setUserAgent(
-        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36"
-      );
+      await blockStorageAndPhone(page);
     },
     async (page) => {
       await page.goto(base + "/", { waitUntil: "domcontentloaded" });
@@ -956,21 +969,168 @@ try {
       await page.click("#grid .thumb");
       await page.waitForSelector("#viewer[open], dialog.viewer[open]");
       await page.waitForFunction(
-        (name) => document.getElementById("viewer-context-btn").textContent.trim() === name,
-        { timeout: 10000 },
+        (name) => {
+          const viewer = document.getElementById("viewer");
+          const poolBar = document.getElementById("viewer-pool-bar");
+          const poolName = document.getElementById("viewer-pool-name");
+          return viewer && viewer.dataset.bars === "pool" && poolBar && !poolBar.hidden && poolName && poolName.textContent.trim() === name;
+        },
+        { timeout: 15000 },
         poolTitle
       );
-      const mid = await page.$eval("#viewer-context-btn", (el) => ({
-        text: el.textContent.trim(),
-        kind: el.dataset.kind,
+      const bars = await page.evaluate(() => ({
+        searchHidden: document.getElementById("viewer-search-bar").hidden,
+        poolHidden: document.getElementById("viewer-pool-bar").hidden,
+        name: document.getElementById("viewer-pool-name").textContent.trim(),
+        prevDisabled: document.getElementById("viewer-pool-prev").disabled,
+        nextDisabled: document.getElementById("viewer-pool-next").disabled,
+        firstHref: document.getElementById("viewer-open").getAttribute("href") || "",
+        title: document.getElementById("viewer-brand-home") && document.getElementById("viewer-brand-home").textContent.trim(),
       }));
-      assert.equal(mid.text, poolTitle);
-      assert.equal(mid.kind, "pool");
-      await page.click("#viewer-context-btn");
+      assert.equal(bars.searchHidden, true);
+      assert.equal(bars.poolHidden, false);
+      assert.equal(bars.name, poolTitle);
+      assert.equal(bars.prevDisabled, true);
+      assert.equal(bars.title, "e621-red");
+      if (!bars.nextDisabled) {
+        await page.click("#viewer-pool-next");
+        await page.waitForFunction(
+          (first) => {
+            const href = document.getElementById("viewer-open").getAttribute("href") || "";
+            const prevOff = document.getElementById("viewer-pool-prev").disabled;
+            return href && href !== first && !prevOff;
+          },
+          { timeout: 20000 },
+          bars.firstHref
+        );
+        const after = await page.evaluate(() => ({
+          href: document.getElementById("viewer-open").getAttribute("href") || "",
+          prevDisabled: document.getElementById("viewer-pool-prev").disabled,
+          searchHidden: document.getElementById("viewer-search-bar").hidden,
+          name: document.getElementById("viewer-pool-name").textContent.trim(),
+        }));
+        assert.notEqual(after.href, bars.firstHref);
+        assert.equal(after.prevDisabled, false);
+        assert.equal(after.searchHidden, true);
+        assert.equal(after.name, poolTitle);
+      }
+      await page.click("#viewer-pool-name");
       await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
       assert.equal(await page.$eval("#pools-panel", (el) => el.hidden), false);
       assert.equal(await page.$eval("#pool-nav", (el) => el.hidden), false);
-      log("PASS in-pool viewer middle button shows the pool name and returns to it (" + poolTitle + ")");
+      log("PASS pools-only viewer shows the pool bar, greys first Prev, and returns to the pool (" + poolTitle + ")");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForSelector("#search");
+      const beforeAlts = await page.$$eval("#grid .thumb img", (imgs) => imgs.map((img) => img.alt).join("|"));
+      await page.$eval("#search", (el) => { el.value = "pool:19609"; });
+      await page.click("#search-form button[type=submit]");
+      await page.waitForFunction(
+        (prev) => {
+          const alts = [...document.querySelectorAll("#grid .thumb img")].map((img) => img.alt).join("|");
+          const status = (document.getElementById("status") || {}).textContent || "";
+          const query = (document.getElementById("search") || {}).value || "";
+          return query.indexOf("pool:19609") !== -1 && alts && alts !== prev && !/Loading/i.test(status);
+        },
+        { timeout: 20000 },
+        beforeAlts
+      );
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await page.waitForFunction(() => {
+        const viewer = document.getElementById("viewer");
+        const searchBar = document.getElementById("viewer-search-bar");
+        const poolBar = document.getElementById("viewer-pool-bar");
+        const mid = document.getElementById("viewer-context-btn");
+        const name = document.getElementById("viewer-pool-name");
+        return viewer && viewer.dataset.bars === "both" && searchBar && !searchBar.hidden && poolBar && !poolBar.hidden && /Search: \(pool:19609\)/.test(mid.textContent) && /official\s+pokémon\s+species\s+artwork/i.test(name.textContent);
+      }, { timeout: 20000 });
+      const first = await page.evaluate(() => ({
+        href: document.getElementById("viewer-open").getAttribute("href") || "",
+        search: document.getElementById("viewer-context-btn").textContent.trim(),
+        name: document.getElementById("viewer-pool-name").textContent.trim(),
+        poolPrev: document.getElementById("viewer-pool-prev").disabled,
+        poolNext: document.getElementById("viewer-pool-next").disabled,
+        searchPrev: document.getElementById("viewer-prev").disabled,
+        searchNext: document.getElementById("viewer-next").disabled,
+        title: document.getElementById("viewer-brand-home").textContent.trim(),
+      }));
+      assert.equal(first.search, "Search: (pool:19609)");
+      assert.match(first.name, /official\s+pokémon\s+species\s+artwork/i);
+      assert.equal(first.title, "e621-red");
+      assert.equal(first.searchPrev, true);
+      assert.equal(first.searchNext, false);
+      const poolDir = !first.poolNext ? "next" : (!first.poolPrev ? "prev" : "");
+      assert.notEqual(poolDir, "");
+      await page.click(poolDir === "next" ? "#viewer-pool-next" : "#viewer-pool-prev");
+      await page.waitForFunction(
+        (href) => (document.getElementById("viewer-open").getAttribute("href") || "") !== href,
+        { timeout: 20000 },
+        first.href
+      );
+      const afterPool = await page.evaluate(() => ({
+        href: document.getElementById("viewer-open").getAttribute("href") || "",
+        search: document.getElementById("viewer-context-btn").textContent.trim(),
+        searchHidden: document.getElementById("viewer-search-bar").hidden,
+        poolHidden: document.getElementById("viewer-pool-bar").hidden,
+      }));
+      assert.notEqual(afterPool.href, first.href);
+      assert.equal(afterPool.search, "Search: (pool:19609)");
+      assert.equal(afterPool.searchHidden, false);
+      assert.equal(afterPool.poolHidden, false);
+      log("PASS search-plus-pool viewer shows both bars and keeps the search label after pool Next");
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const count = await page.$$eval("#grid .thumb", (els) => els.length);
+      let found = false;
+      for (let i = 0; i < Math.min(count, 16); i++) {
+        const thumbs = await page.$$("#grid .thumb");
+        if (!thumbs[i]) break;
+        await thumbs[i].click();
+        await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+        await page.waitForFunction(() => {
+          const mode = document.getElementById("viewer").dataset.bars;
+          return mode === "search" || mode === "both" || mode === "pool";
+        }, { timeout: 15000 });
+        const mode = await page.$eval("#viewer", (el) => el.dataset.bars);
+        if (mode === "search") {
+          const bars = await page.evaluate(() => ({
+            searchHidden: document.getElementById("viewer-search-bar").hidden,
+            poolHidden: document.getElementById("viewer-pool-bar").hidden,
+            mid: document.getElementById("viewer-context-btn").textContent.trim(),
+          }));
+          assert.equal(bars.searchHidden, false);
+          assert.equal(bars.poolHidden, true);
+          assert.equal(bars.mid, "Search: (none)");
+          found = true;
+          break;
+        }
+        await page.click("#viewer-close");
+        await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 10000 });
+      }
+      assert.equal(found, true);
+      log("PASS a post with no pool shows only the search bar");
     }
   );
 
