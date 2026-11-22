@@ -2,7 +2,7 @@
  * Hard exclusion and search-query helpers.
  * Blocked tags cannot be disabled by UI or URL parameters.
  */
-export const BLOCKED_TAGS = Object.freeze(["young", "loli", "shota", "cub"]);
+export const BLOCKED_TAGS = Object.freeze(["the_narscix_war"]);
 export const FORCED_EXCLUSIONS = Object.freeze(
   BLOCKED_TAGS.map((tag) => `-${tag}`)
 );
@@ -468,4 +468,3 @@ export function postHasActiveChildren(post) {
   if (has && has.children != null) return Boolean(has.children);
   return postChildIds(post).length > 0;
 }
-
