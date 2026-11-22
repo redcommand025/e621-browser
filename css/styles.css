@@ -608,7 +608,7 @@ button.viewer-brand:focus-visible {
 .play-mark {
   position: absolute;
   right: 6px;
-  bottom: 6px;
+  top: 6px;
   background: rgba(0, 0, 0, 0.65);
   color: #fff;
   border-radius: 999px;
@@ -617,6 +617,58 @@ button.viewer-brand:focus-visible {
   display: grid;
   place-items: center;
   font-size: 0.7rem;
+  z-index: 2;
+}
+
+.thumb-stats,
+.viewer-stats {
+  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Noto Sans Symbols", "DejaVu Sans", "Droid Sans Fallback", sans-serif;
+}
+
+.thumb-stats {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px 4px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.15;
+  pointer-events: none;
+}
+
+.viewer-stats {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 6px 10px 8px;
+  background: #111;
+  color: #eee;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.stat-score.score-up {
+  color: #8fe3a4;
+}
+
+.stat-score.score-down {
+  color: #f0a3a3;
+}
+
+.thumb-stats .stat-score.score-zero,
+.viewer-stats .stat-score.score-zero {
+  color: inherit;
+  opacity: 0.9;
 }
 
 .pager {

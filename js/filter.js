@@ -387,3 +387,41 @@ export function stepPoolIds(ids, fromIndex, direction, statusMap, batchSize) {
   }
   return { index: -1, id: null, need: need };
 }
+
+function numericValue(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function postFavCount(post) {
+  const stats = post && post.stats;
+  if (stats && stats.fav_count != null) return numericValue(stats.fav_count, 0);
+  if (post && post.fav_count != null) return numericValue(post.fav_count, 0);
+  return 0;
+}
+
+export function postScoreTotal(post) {
+  const stats = post && post.stats;
+  const score = (stats && stats.score) || (post && post.score);
+  if (score && typeof score === "object") return numericValue(score.total, 0);
+  if (score != null && typeof score !== "object") return numericValue(score, 0);
+  return 0;
+}
+
+export function formatPostStats(post) {
+  const favs = postFavCount(post);
+  const total = postScoreTotal(post);
+  const direction = total > 0 ? "up" : total < 0 ? "down" : "zero";
+  const mark = direction === "up" ? "⬆" : direction === "down" ? "⬇" : "=";
+  const shown = direction === "zero" ? 0 : Math.abs(total);
+  return {
+    favs: favs,
+    total: total,
+    direction: direction,
+    mark: mark,
+    favText: "☆" + favs,
+    scoreText: mark + " " + shown,
+    text: "☆" + favs + " " + mark + " " + shown,
+  };
+}
+

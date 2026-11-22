@@ -6,6 +6,7 @@ import {
   filterSuggestions,
   collectTagsByCategory,
   formatPoolName,
+  formatPostStats,
   formatTagCategoryLabel,
   isBlockedTag,
   isValidUsername,
@@ -18,13 +19,13 @@ import {
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js?v=20261122e";
+} from "./filter.js?v=20261122f";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261122e";
+} from "./storage.js?v=20261122f";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -45,7 +46,7 @@ import {
   sampleImageUrl,
   setBasicAuth,
   videoSources,
-} from "./api.js?v=20261122e";
+} from "./api.js?v=20261122f";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -107,6 +108,7 @@ const els = {
   viewerPoolPrev: document.getElementById("viewer-pool-prev"),
   viewerPoolName: document.getElementById("viewer-pool-name"),
   viewerPoolNext: document.getElementById("viewer-pool-next"),
+  viewerStats: document.getElementById("viewer-stats"),
   viewerTags: document.getElementById("viewer-tags"),
   brandHome: document.getElementById("brand-home"),
   viewerBrandHome: document.getElementById("viewer-brand-home"),
@@ -423,6 +425,20 @@ function ratingLabel(rating) {
   return "E";
 }
 
+function fillStatsLine(node, post) {
+  if (!node) return;
+  node.innerHTML = "";
+  const stats = formatPostStats(post);
+  const fav = document.createElement("span");
+  fav.className = "stat-fav";
+  fav.textContent = stats.favText;
+  const score = document.createElement("span");
+  score.className = "stat-score score-" + stats.direction;
+  score.textContent = stats.scoreText;
+  node.append(fav, document.createTextNode(" "), score);
+  node.setAttribute("aria-label", stats.favs + " favorites, score " + stats.total);
+}
+
 function renderGrid(reset) {
   if (reset) els.grid.innerHTML = "";
   const start = reset ? 0 : els.grid.childElementCount;
@@ -455,6 +471,10 @@ function renderGrid(reset) {
       play.textContent = "▶";
       button.append(play);
     }
+    const bar = document.createElement("span");
+    bar.className = "thumb-stats";
+    fillStatsLine(bar, post);
+    button.append(bar);
     button.addEventListener("click", () => openViewer(i));
     els.grid.append(button);
   }
@@ -1039,6 +1059,10 @@ function renderViewer() {
   if (els.viewerOpen) els.viewerOpen.href = postPageUrl(post);
   if (els.viewerMeta) {
     els.viewerMeta.textContent = "#" + post.id + " · " + String(post.rating || "").toUpperCase();
+  }
+  if (els.viewerStats) {
+    els.viewerStats.hidden = false;
+    fillStatsLine(els.viewerStats, post);
   }
   updateViewerNav();
   updateQualityButton(post);

@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import puppeteer from "puppeteer-core";
 import {
   collectTagsByCategory,
+  formatPostStats,
   formatTagCategoryLabel,
   isBlockedTag,
   normalizePostsResponse,
@@ -1509,6 +1510,57 @@ try {
       } else {
         log("PASS pool name search loaded " + named.count + " (single page)");
       }
+    }
+  );
+
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      const grid = await page.$eval("#grid .thumb", (thumb) => {
+        const stats = thumb.querySelector(".thumb-stats");
+        const box = thumb.getBoundingClientRect();
+        const fav = stats && stats.querySelector(".stat-fav");
+        const score = stats && stats.querySelector(".stat-score");
+        return {
+          hasBar: Boolean(stats),
+          fav: fav ? fav.textContent.trim() : "",
+          score: score ? score.textContent.trim() : "",
+          direction: score ? [...score.classList].find((name) => name.indexOf("score-") === 0) : "",
+          square: Math.abs(box.width - box.height) < 2,
+          text: stats ? stats.textContent.replace(/\s+/g, " ").trim() : "",
+        };
+      });
+      assert.equal(grid.hasBar, true);
+      assert.equal(grid.square, true);
+      assert.match(grid.fav, /^☆\d+$/);
+      assert.match(grid.score, /^[⬆⬇=] \d+$/);
+      assert.match(grid.direction, /^score-(up|down|zero)$/);
+      await page.click("#grid .thumb");
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      const viewer = await page.evaluate(() => {
+        const stats = document.getElementById("viewer-stats");
+        const fav = stats && stats.querySelector(".stat-fav");
+        const score = stats && stats.querySelector(".stat-score");
+        const tags = document.getElementById("viewer-tags");
+        const stage = document.getElementById("viewer-stage");
+        return {
+          fav: fav ? fav.textContent.trim() : "",
+          score: score ? score.textContent.trim() : "",
+          text: stats ? stats.textContent.replace(/\s+/g, " ").trim() : "",
+          afterMedia: Boolean(stats && stage && tags && stage.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING && stats.compareDocumentPosition(tags) & Node.DOCUMENT_POSITION_FOLLOWING),
+        };
+      });
+      assert.equal(viewer.fav, grid.fav);
+      assert.equal(viewer.score, grid.score);
+      assert.equal(viewer.afterMedia, true);
+      log("PASS thumbnail and viewer stats show favorites and score (" + grid.text + ")");
     }
   );
 

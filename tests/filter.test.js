@@ -13,6 +13,7 @@ import {
   isBlockedTag,
   collectTagsByCategory,
   formatPoolName,
+  formatPostStats,
   formatTagCategoryLabel,
   isValidUsername,
   nameContainsBlockedTerm,
@@ -311,4 +312,27 @@ test("poolResponseHasMore is based on the raw API count, not the filtered count"
   assert.equal(shouldFetchMorePools(100, 100, 100, 0, 10), false);
   assert.equal(shouldFetchMorePools(100, 100, 90, 10, 10), false);
   assert.equal(shouldFetchMorePools(40, 100, 39, 0, 10), false);
+});
+
+test("formatPostStats reads favs and score from both API shapes", () => {
+  assert.deepEqual(formatPostStats({ stats: { fav_count: 12, score: { up: 160, down: 8, total: 152 } } }), {
+    favs: 12,
+    total: 152,
+    direction: "up",
+    mark: "⬆",
+    favText: "☆12",
+    scoreText: "⬆ 152",
+    text: "☆12 ⬆ 152",
+  });
+  assert.deepEqual(formatPostStats({ fav_count: 3, score: { total: -4 } }), {
+    favs: 3,
+    total: -4,
+    direction: "down",
+    mark: "⬇",
+    favText: "☆3",
+    scoreText: "⬇ 4",
+    text: "☆3 ⬇ 4",
+  });
+  assert.equal(formatPostStats({ stats: { fav_count: 0, score: { total: 0 } } }).text, "☆0 = 0");
+  assert.equal(formatPostStats({}).text, "☆0 = 0");
 });
