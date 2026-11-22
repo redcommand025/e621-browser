@@ -14,18 +14,21 @@ import {
   poolResponseHasMore,
   poolDirectionOpen,
   shouldFetchMorePools,
+  postChildIds,
+  postHasActiveChildren,
+  postParentId,
   postPoolIds,
   stepPoolIds,
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js?v=20261122f";
+} from "./filter.js?v=20261122g";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261122f";
+} from "./storage.js?v=20261122g";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -46,7 +49,7 @@ import {
   sampleImageUrl,
   setBasicAuth,
   videoSources,
-} from "./api.js?v=20261122f";
+} from "./api.js?v=20261122g";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -109,6 +112,7 @@ const els = {
   viewerPoolName: document.getElementById("viewer-pool-name"),
   viewerPoolNext: document.getElementById("viewer-pool-next"),
   viewerStats: document.getElementById("viewer-stats"),
+  viewerFamily: document.getElementById("viewer-family"),
   viewerTags: document.getElementById("viewer-tags"),
   brandHome: document.getElementById("brand-home"),
   viewerBrandHome: document.getElementById("viewer-brand-home"),
@@ -169,6 +173,8 @@ const state = {
   poolPostCache: {},
   poolNavLoading: false,
   poolNavSeq: 0,
+  familySeq: 0,
+  familyCache: {},
 };
 
 function parseStoredList(raw, asTags = false) {
@@ -869,6 +875,7 @@ function showViewerPost(post) {
   if (!post) return;
   state.viewerPost = post;
   cachePoolPost(post);
+  cacheFamilyPost(post);
   const idx = searchIndexOfPost(post);
   if (idx >= 0) state.activeIndex = idx;
   renderViewer();
@@ -1051,6 +1058,173 @@ function applyTagToSearch(mode, raw) {
   searchFromStart();
 }
 
+function hideViewerFamily() {
+  if (!els.viewerFamily) return;
+  els.viewerFamily.hidden = true;
+  els.viewerFamily.innerHTML = "";
+}
+
+function cacheFamilyPost(post) {
+  if (!post || post.id == null) return;
+  if (!state.familyCache) state.familyCache = {};
+  state.familyCache[String(post.id)] = post;
+}
+
+function cachedFamilyPost(id) {
+  const key = String(id);
+  if (state.familyCache && state.familyCache[key]) return state.familyCache[key];
+  if (state.poolPostCache && state.poolPostCache[key]) return state.poolPostCache[key];
+  const idx = searchIndexOfPost({ id: id });
+  if (idx >= 0) return state.posts[idx];
+  if (state.viewerPost && Number(state.viewerPost.id) === Number(id)) return state.viewerPost;
+  return null;
+}
+
+function loadAllowedPostsByIds(ids) {
+  const unique = [];
+  const seen = {};
+  const have = [];
+  const need = [];
+  for (let i = 0; i < (ids || []).length; i++) {
+    const id = Number(ids[i]);
+    if (!Number.isFinite(id) || id <= 0 || seen[id]) continue;
+    seen[id] = true;
+    unique.push(id);
+    const cached = cachedFamilyPost(id);
+    if (cached) have.push(cached);
+    else need.push(id);
+  }
+  if (!need.length) return Promise.resolve(have);
+  return fetchPostsByIds(need, { extraTags: exclusionTagString() }).then(function (posts) {
+    const allowed = clientFilter(posts || []);
+    for (let i = 0; i < allowed.length; i++) cacheFamilyPost(allowed[i]);
+    return have.concat(allowed);
+  });
+}
+
+function postsByIdMap(posts) {
+  const map = {};
+  for (let i = 0; i < (posts || []).length; i++) {
+    const post = posts[i];
+    if (post && post.id != null) map[String(post.id)] = post;
+  }
+  return map;
+}
+
+function updateViewerFamily(post) {
+  hideViewerFamily();
+  if (!post) return;
+  cacheFamilyPost(post);
+  const seq = (state.familySeq = (state.familySeq || 0) + 1);
+  const selfId = Number(post.id);
+  const parentId = postParentId(post);
+  const childIds = postChildIds(post);
+  if (!parentId && !childIds.length && !postHasActiveChildren(post)) return;
+  const firstIds = [];
+  if (parentId) firstIds.push(parentId);
+  for (let i = 0; i < childIds.length; i++) {
+    if (childIds[i] !== parentId && childIds[i] !== selfId) firstIds.push(childIds[i]);
+  }
+  loadAllowedPostsByIds(firstIds)
+    .then(function (posts) {
+      if (seq !== state.familySeq) return null;
+      const byId = postsByIdMap(posts);
+      const parent = parentId ? byId[String(parentId)] || null : null;
+      const children = [];
+      for (let i = 0; i < childIds.length; i++) {
+        const related = byId[String(childIds[i])];
+        if (related) children.push(related);
+      }
+      let siblingIds = [];
+      if (parent && !children.length) {
+        const fromParent = postChildIds(parent);
+        for (let i = 0; i < fromParent.length; i++) {
+          if (fromParent[i] !== selfId) siblingIds.push(fromParent[i]);
+        }
+      }
+      if (!siblingIds.length) {
+        return { parent: parent, children: children, siblings: [] };
+      }
+      return loadAllowedPostsByIds(siblingIds).then(function (siblingPosts) {
+        if (seq !== state.familySeq) return null;
+        const siblings = [];
+        for (let i = 0; i < (siblingPosts || []).length; i++) {
+          if (Number(siblingPosts[i].id) !== selfId) siblings.push(siblingPosts[i]);
+        }
+        return { parent: parent, children: children, siblings: siblings };
+      });
+    })
+    .then(function (family) {
+      if (!family || seq !== state.familySeq) return;
+      renderViewerFamily(family);
+    })
+    .catch(function (error) {
+      if (error && error.name === "AbortError") return;
+      console.error(error);
+    });
+}
+
+function createFamilyThumb(post, role) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "family-thumb";
+  button.dataset.role = role;
+  button.dataset.postId = String(post.id);
+  button.setAttribute("aria-label", (role === "parent" ? "Parent post " : "Related post ") + post.id);
+  const img = document.createElement("img");
+  const src = previewUrl(post) || sampleImageUrl(post);
+  img.alt = "Post " + post.id;
+  img.loading = "lazy";
+  if (src) img.src = src;
+  const badge = document.createElement("span");
+  badge.className = "badge " + ratingClass(post.rating);
+  badge.textContent = ratingLabel(post.rating);
+  button.append(img, badge);
+  if (isVideoPost(post)) {
+    const play = document.createElement("span");
+    play.className = "play-mark";
+    play.textContent = "▶";
+    button.append(play);
+  }
+  button.addEventListener("click", function () {
+    showViewerPost(post);
+  });
+  return button;
+}
+
+function renderFamilySide(label, posts, role) {
+  const side = document.createElement("div");
+  side.className = "family-side family-" + (role === "parent" ? "parent" : "children");
+  const title = document.createElement("p");
+  title.className = "family-label";
+  title.textContent = label;
+  const row = document.createElement("div");
+  row.className = "family-row";
+  for (let i = 0; i < posts.length; i++) {
+    row.append(createFamilyThumb(posts[i], role));
+  }
+  side.append(title, row);
+  return side;
+}
+
+function renderViewerFamily(family) {
+  if (!els.viewerFamily) return;
+  const parent = family && family.parent;
+  const children = (family && family.children) || [];
+  const siblings = (family && family.siblings) || [];
+  const right = children.length ? children : siblings;
+  const rightRole = children.length ? "child" : "sibling";
+  const rightLabel = children.length ? (children.length === 1 ? "Child" : "Children") : (siblings.length === 1 ? "Sibling" : "Siblings");
+  if (!parent && !right.length) {
+    hideViewerFamily();
+    return;
+  }
+  els.viewerFamily.innerHTML = "";
+  if (parent) els.viewerFamily.append(renderFamilySide("Parent", [parent], "parent"));
+  if (right.length) els.viewerFamily.append(renderFamilySide(rightLabel, right, rightRole));
+  els.viewerFamily.hidden = false;
+}
+
 function renderViewer() {
   const post = currentViewerPost();
   if (!post) return;
@@ -1069,6 +1243,7 @@ function renderViewer() {
   renderViewerTags(post);
   updateViewerContext(post);
   updatePoolNavButtons();
+  updateViewerFamily(post);
   if (isVideoPost(post)) {
     const sources = videoSources(post);
     const chosen =
@@ -1103,6 +1278,8 @@ function closeViewer() {
   try {
     if (els.viewerStage) clearViewerMedia();
     if (els.viewerTags) els.viewerTags.innerHTML = "";
+    state.familySeq = (state.familySeq || 0) + 1;
+    hideViewerFamily();
     if (!els.viewer) return;
     if (els.viewer.open && typeof els.viewer.close === "function") els.viewer.close();
     else els.viewer.removeAttribute("open");

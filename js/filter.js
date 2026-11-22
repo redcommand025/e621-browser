@@ -425,3 +425,47 @@ export function formatPostStats(post) {
   };
 }
 
+export function uniquePostIds(list) {
+  const raw = Array.isArray(list) ? list : String(list == null ? "" : list).split(/[,\s]+/);
+  const out = [];
+  const seen = {};
+  for (let i = 0; i < raw.length; i++) {
+    const id = Number(raw[i]);
+    if (!Number.isFinite(id) || id <= 0 || seen[id]) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+export function postParentId(post) {
+  const rel = post && post.relationships;
+  if (rel && rel.parent_id != null) return uniquePostIds([rel.parent_id])[0] || null;
+  if (post && post.parent_id != null) return uniquePostIds([post.parent_id])[0] || null;
+  return null;
+}
+
+export function postChildIds(post) {
+  const rel = post && post.relationships;
+  const has = post && post.has;
+  const raw =
+    (rel && rel.children) ||
+    (post && post.children) ||
+    (post && post.children_ids) ||
+    [];
+  const selfId = post && post.id != null ? Number(post.id) : 0;
+  return uniquePostIds(raw).filter(function (id) {
+    return id !== selfId;
+  });
+}
+
+export function postHasActiveChildren(post) {
+  const rel = post && post.relationships;
+  const has = post && post.has;
+  if (rel && rel.has_active_children != null) return Boolean(rel.has_active_children);
+  if (has && has.active_children != null) return Boolean(has.active_children);
+  if (rel && rel.has_children != null) return Boolean(rel.has_children);
+  if (has && has.children != null) return Boolean(has.children);
+  return postChildIds(post).length > 0;
+}
+

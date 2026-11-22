@@ -19,7 +19,11 @@ import {
   nameContainsBlockedTerm,
   poolDirectionOpen,
   poolResponseHasMore,
+  postChildIds,
+  postHasActiveChildren,
+  postParentId,
   postPoolIds,
+  uniquePostIds,
   shouldFetchMorePools,
   sanitizeUsername,
   stepPoolIds,
@@ -336,3 +340,20 @@ test("formatPostStats reads favs and score from both API shapes", () => {
   assert.equal(formatPostStats({ stats: { fav_count: 0, score: { total: 0 } } }).text, "☆0 = 0");
   assert.equal(formatPostStats({}).text, "☆0 = 0");
 });
+
+test("uniquePostIds, postParentId, and postChildIds read both API shapes", () => {
+  assert.deepEqual(uniquePostIds([11, "11", 0, "22", "nope", 22]), [11, 22]);
+  assert.deepEqual(uniquePostIds("5, 6 5"), [5, 6]);
+  assert.equal(postParentId({ relationships: { parent_id: 11 } }), 11);
+  assert.equal(postParentId({ parent_id: "22" }), 22);
+  assert.equal(postParentId({ relationships: { parent_id: null } }), null);
+  assert.equal(postParentId({}), null);
+  assert.deepEqual(postChildIds({ id: 9, relationships: { children: [3, 4, 3, 0, 9] } }), [3, 4]);
+  assert.deepEqual(postChildIds({ id: 5, children: "5,6" }), [6]);
+  assert.equal(postHasActiveChildren({ has: { active_children: true } }), true);
+  assert.equal(postHasActiveChildren({ relationships: { has_active_children: false }, children: [] }), false);
+  assert.equal(postHasActiveChildren({ has: { children: true } }), true);
+  assert.equal(postHasActiveChildren({ relationships: { children: [8] } }), true);
+  assert.equal(postHasActiveChildren({}), false);
+});
+

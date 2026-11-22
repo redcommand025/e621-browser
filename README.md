@@ -18,12 +18,12 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Saved searches: store a query such as `canid order:score`, run it later, or delete it
 - Rating filter (defaults to all ratings) and sorting (`order:` metatags)
 - Responsive, lazy-loaded thumbnail grid
-- Viewer for stills and webm/mp4 videos, with sample/original and alternate video versions
+- Viewer for stills and webm/mp4 videos, with sample/original and alternate video versions. If a post belongs to a family, a Parent thumbnail is shown on the left and Child or Sibling thumbnails on the right
 - Works when `localStorage` is blocked (confirmation, blacklist, saved searches, and remembered accounts then last only for the tab)
 
 ## Always-on exclusions
 
-Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden, including in favorites, pools, popular, and pool covers. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every tag query and also filters returned tag lists in the browser. Pools whose names include those terms are not listed. There is no setting or URL parameter to turn this off.
+Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden, including in favorites, pools, popular, pool covers, and family thumbnails. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every tag query and also filters returned tag lists in the browser. Pools whose names include those terms are not listed. There is no setting or URL parameter to turn this off.
 
 ## Storage and backups
 

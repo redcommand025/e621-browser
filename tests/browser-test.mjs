@@ -1564,6 +1564,162 @@ try {
     }
   );
 
+  await withPage(
+    browser,
+    base,
+    async (page) => {
+      await blockStorageAndPhone(page);
+    },
+    async (page, { apiCalls }) => {
+      await page.goto(base + "/", { waitUntil: "domcontentloaded" });
+      await confirmAndUseSafe(page);
+      await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
+      let foundIds = [];
+      let lastStatus = "";
+      for (let attempt = 0; attempt < 3 && !foundIds.includes("6875594"); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2000 : 2500));
+        const beforeAlts = await page.$$eval("#grid .thumb img", (imgs) => imgs.map((img) => img.alt).join("|"));
+        await page.$eval("#search", (el) => {
+          el.value = "id:6875594,6875570";
+        });
+        await page.evaluate(() => {
+          const form = document.getElementById("search-form");
+          if (typeof form.requestSubmit === "function") form.requestSubmit();
+          else form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        });
+        try {
+          await page.waitForFunction(
+            (prev) => {
+              const alts = [...document.querySelectorAll("#grid .thumb img")].map((img) => img.alt).join("|");
+              const status = (document.getElementById("status") || {}).textContent || "";
+              const query = (document.getElementById("search") || {}).value || "";
+              return query.indexOf("id:6875594,6875570") !== -1 && alts && alts !== prev && !/Loading/i.test(status);
+            },
+            { timeout: 25000 },
+            beforeAlts
+          );
+        } catch (error) {
+          lastStatus = await page.$eval("#status", (el) => el.textContent || "");
+          if (attempt === 2) throw new Error("family search failed: " + lastStatus + " / " + error.message);
+          continue;
+        }
+        foundIds = await page.$$eval("#grid .thumb img", (imgs) =>
+          imgs.map((img) => {
+            const match = (img.alt || "").match(/Post\s+(\d+)/);
+            return match ? match[1] : "";
+          })
+        );
+        lastStatus = await page.$eval("#status", (el) => el.textContent || "");
+      }
+      const found = foundIds;
+      assert.ok(found.includes("6875594"), "expected safe child post 6875594 in the grid");
+      assert.ok(found.includes("6875570"), "expected safe parent post 6875570 in the grid");
+      await clickSelector(page, '#grid .thumb img[alt="Post 6875594"]');
+      await page.waitForSelector("#viewer[open], dialog.viewer[open]");
+      await page.waitForFunction(() => {
+        const family = document.getElementById("viewer-family");
+        return family && !family.hidden && family.querySelector('.family-thumb[data-role="parent"][data-post-id="6875570"]');
+      }, { timeout: 20000 });
+      const childView = await page.evaluate(() => {
+        const family = document.getElementById("viewer-family");
+        const sides = [...family.querySelectorAll(".family-side")].map((side) => ({
+          label: (side.querySelector(".family-label") || {}).textContent.trim(),
+          parent: side.classList.contains("family-parent"),
+          children: side.classList.contains("family-children"),
+          ids: [...side.querySelectorAll(".family-thumb")].map((btn) => btn.dataset.postId),
+          roles: [...side.querySelectorAll(".family-thumb")].map((btn) => btn.dataset.role),
+        }));
+        const parentBtn = family.querySelector('.family-thumb[data-role="parent"]');
+        const box = parentBtn ? parentBtn.getBoundingClientRect() : { width: 0, height: 0 };
+        const searchPrev = document.getElementById("viewer-prev");
+        const searchNext = document.getElementById("viewer-next");
+        return {
+          hidden: family.hidden,
+          sides,
+          parentId: parentBtn && parentBtn.dataset.postId,
+          parentLeft: sides[0] && sides[0].parent,
+          thumbSize: Math.round(box.width) + "x" + Math.round(box.height),
+          searchPrevDisabled: searchPrev && searchPrev.disabled,
+          searchNextDisabled: searchNext && searchNext.disabled,
+          mid: (document.getElementById("viewer-context-btn") || {}).textContent.trim(),
+        };
+      });
+      assert.equal(childView.hidden, false);
+      assert.equal(childView.parentId, "6875570");
+      assert.equal(childView.parentLeft, true);
+      assert.equal(childView.sides[0].label, "Parent");
+      const siblingSide = childView.sides.find((side) => side.roles.includes("sibling") || side.roles.includes("child"));
+      assert.ok(siblingSide && siblingSide.ids.length > 0, "expected siblings or children on the right");
+      assert.equal(siblingSide.children, true);
+      assert.equal(siblingSide.ids.includes("6875594"), false);
+      assert.match(childView.thumbSize, /^7\dx7\d$/);
+      assert.equal(childView.searchPrevDisabled === false || childView.searchNextDisabled === false, true);
+      const familyUrls = apiCalls.filter((url) => {
+        const tags = decodeURIComponent(new URL(url).searchParams.get("tags") || "");
+        return url.includes("/posts.json") && /(^|\s)id:\d/.test(tags);
+      });
+      assert.ok(familyUrls.length > 0, "expected a family id fetch");
+      for (const url of familyUrls) {
+        const tags = decodeURIComponent(new URL(url).searchParams.get("tags") || "");
+        assert.match(tags, /(^|\s)rating:s(\s|$)/);
+        assert.match(tags, /(^|\s)-young(\s|$)/);
+      }
+
+      const beforeMeta = await page.$eval("#viewer-meta", (el) => el.textContent);
+      await clickSelector(page, '.family-thumb[data-role="parent"]');
+      await page.waitForFunction((prev) => {
+        const family = document.getElementById("viewer-family");
+        return (
+          document.getElementById("viewer-meta").textContent !== prev &&
+          family &&
+          !family.hidden &&
+          family.querySelectorAll('.family-thumb[data-role="child"]').length > 0
+        );
+      }, { timeout: 20000 }, beforeMeta);
+      const parentView = await page.evaluate(() => {
+        const family = document.getElementById("viewer-family");
+        const children = [...family.querySelectorAll('.family-thumb[data-role="child"]')].map((btn) => btn.dataset.postId);
+        const parents = [...family.querySelectorAll('.family-thumb[data-role="parent"]')];
+        const childSide = family.querySelector(".family-children");
+        const label = childSide && childSide.querySelector(".family-label");
+        return {
+          meta: (document.getElementById("viewer-meta") || {}).textContent,
+          childIds: children,
+          parentCount: parents.length,
+          rightLabel: label ? label.textContent.trim() : "",
+          childOnRight: Boolean(childSide),
+          searchPrevDisabled: document.getElementById("viewer-prev").disabled,
+          searchNextDisabled: document.getElementById("viewer-next").disabled,
+        };
+      });
+      assert.match(parentView.meta, /#6875570/);
+      assert.equal(parentView.parentCount, 0);
+      assert.ok(parentView.childIds.includes("6875594"), "parent should list the child we came from");
+      assert.ok(parentView.childIds.length >= 2, "expected several children on the parent");
+      assert.equal(parentView.childOnRight, true);
+      assert.equal(parentView.rightLabel, parentView.childIds.length === 1 ? "Child" : "Children");
+      assert.equal(parentView.searchPrevDisabled === false || parentView.searchNextDisabled === false, true);
+
+      const siblingId = parentView.childIds.find((id) => id !== "6875594");
+      if (siblingId) {
+        const midMeta = await page.$eval("#viewer-meta", (el) => el.textContent);
+        await clickSelector(page, '.family-thumb[data-role="child"][data-post-id="' + siblingId + '"]');
+        await page.waitForFunction((prev) => document.getElementById("viewer-meta").textContent !== prev, { timeout: 20000 }, midMeta);
+        const jumped = await page.evaluate(() => ({
+          meta: (document.getElementById("viewer-meta") || {}).textContent,
+          prev: document.getElementById("viewer-prev").disabled,
+          next: document.getElementById("viewer-next").disabled,
+          hasParent: Boolean(document.querySelector('#viewer-family .family-thumb[data-role="parent"]')),
+        }));
+        assert.match(jumped.meta, new RegExp("#" + siblingId));
+        assert.equal(jumped.prev, true);
+        assert.equal(jumped.next, true);
+        assert.equal(jumped.hasParent, true);
+      }
+      log("PASS viewer family strip shows parent on the left and children or siblings on the right");
+    }
+  );
+
   log("All browser tests passed.");
 } catch (error) {
   failures = 1;
