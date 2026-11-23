@@ -555,6 +555,7 @@ function preferSample() {
 }
 
 function clearViewerMedia() {
+  resetViewerZoom();
   const media = els.viewerStage.querySelector("video, img");
   if (media && media.tagName === "VIDEO") {
     media.pause();
@@ -1347,6 +1348,163 @@ function stepActiveViewer(delta) {
   return Promise.resolve();
 }
 
+const VIEWER_MAX_ZOOM = 5;
+const VIEWER_DOUBLE_TAP_ZOOM = 2.5;
+const viewerZoom = {
+  scale: 1,
+  x: 0,
+  y: 0,
+  usedMultiTouch: false,
+  pinch: null,
+  pan: null,
+  lastTap: 0,
+};
+
+function viewerMedia() {
+  return els.viewerStage ? els.viewerStage.querySelector("img, video") : null;
+}
+
+function applyViewerZoom() {
+  const media = viewerMedia();
+  if (!media) return;
+  if (viewerZoom.scale <= 1) {
+    media.style.transform = "";
+    media.style.transformOrigin = "";
+    els.viewerStage.classList.remove("is-zoomed");
+    return;
+  }
+  media.style.transformOrigin = "0 0";
+  media.style.transform = `translate(${viewerZoom.x}px, ${viewerZoom.y}px) scale(${viewerZoom.scale})`;
+  els.viewerStage.classList.add("is-zoomed");
+}
+
+function resetViewerZoom() {
+  viewerZoom.scale = 1;
+  viewerZoom.x = 0;
+  viewerZoom.y = 0;
+  viewerZoom.pinch = null;
+  viewerZoom.pan = null;
+  applyViewerZoom();
+}
+
+function clampViewerZoom(media) {
+  const w = media.offsetWidth;
+  const h = media.offsetHeight;
+  const s = viewerZoom.scale;
+  viewerZoom.x = Math.min(0, Math.max(w - w * s, viewerZoom.x));
+  viewerZoom.y = Math.min(0, Math.max(h - h * s, viewerZoom.y));
+}
+
+// Zoom so the media point under screen point (cx, cy) stays under it.
+function zoomViewerAt(media, cx, cy, fromScale, fromX, fromY, originLeft, originTop, toScale) {
+  const px = (cx - originLeft - fromX) / fromScale;
+  const py = (cy - originTop - fromY) / fromScale;
+  viewerZoom.scale = Math.min(VIEWER_MAX_ZOOM, Math.max(1, toScale));
+  viewerZoom.x = cx - originLeft - viewerZoom.scale * px;
+  viewerZoom.y = cy - originTop - viewerZoom.scale * py;
+  clampViewerZoom(media);
+}
+
+function touchDistance(a, b) {
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+function bindViewerZoom() {
+  const stage = els.viewerStage;
+  if (!stage) return;
+  stage.addEventListener(
+    "touchstart",
+    (event) => {
+      const media = viewerMedia();
+      if (!media) return;
+      if (event.touches.length === 1) viewerZoom.usedMultiTouch = false;
+      const rect = media.getBoundingClientRect();
+      const originLeft = rect.left - viewerZoom.x;
+      const originTop = rect.top - viewerZoom.y;
+      if (event.touches.length === 2) {
+        viewerZoom.usedMultiTouch = true;
+        const [a, b] = event.touches;
+        viewerZoom.pan = null;
+        viewerZoom.pinch = {
+          distance: touchDistance(a, b) || 1,
+          cx: (a.clientX + b.clientX) / 2,
+          cy: (a.clientY + b.clientY) / 2,
+          scale: viewerZoom.scale,
+          x: viewerZoom.x,
+          y: viewerZoom.y,
+          originLeft,
+          originTop,
+        };
+        event.preventDefault();
+      } else if (event.touches.length === 1 && viewerZoom.scale > 1) {
+        const t = event.touches[0];
+        viewerZoom.pan = { sx: t.clientX, sy: t.clientY, x: viewerZoom.x, y: viewerZoom.y };
+      }
+    },
+    { passive: false }
+  );
+  stage.addEventListener(
+    "touchmove",
+    (event) => {
+      const media = viewerMedia();
+      if (!media) return;
+      if (viewerZoom.pinch && event.touches.length >= 2) {
+        const [a, b] = event.touches;
+        const p = viewerZoom.pinch;
+        const ratio = touchDistance(a, b) / p.distance;
+        const cx = (a.clientX + b.clientX) / 2;
+        const cy = (a.clientY + b.clientY) / 2;
+        zoomViewerAt(media, p.cx, p.cy, p.scale, p.x, p.y, p.originLeft, p.originTop, p.scale * ratio);
+        viewerZoom.x += cx - p.cx;
+        viewerZoom.y += cy - p.cy;
+        clampViewerZoom(media);
+        applyViewerZoom();
+        event.preventDefault();
+      } else if (viewerZoom.pan && event.touches.length === 1 && viewerZoom.scale > 1) {
+        const t = event.touches[0];
+        viewerZoom.x = viewerZoom.pan.x + (t.clientX - viewerZoom.pan.sx);
+        viewerZoom.y = viewerZoom.pan.y + (t.clientY - viewerZoom.pan.sy);
+        clampViewerZoom(media);
+        applyViewerZoom();
+        event.preventDefault();
+      }
+    },
+    { passive: false }
+  );
+  stage.addEventListener(
+    "touchend",
+    (event) => {
+      const media = viewerMedia();
+      if (event.touches.length < 2) viewerZoom.pinch = null;
+      if (event.touches.length === 1 && viewerZoom.scale > 1) {
+        const t = event.touches[0];
+        viewerZoom.pan = { sx: t.clientX, sy: t.clientY, x: viewerZoom.x, y: viewerZoom.y };
+      }
+      if (event.touches.length === 0) viewerZoom.pan = null;
+      if (viewerZoom.scale < 1.05 && viewerZoom.scale !== 1) resetViewerZoom();
+      // Double-tap an image to zoom in, or back out when zoomed.
+      if (!media || media.tagName !== "IMG") return;
+      if (event.touches.length || event.changedTouches.length !== 1 || viewerZoom.usedMultiTouch) return;
+      const now = Date.now();
+      const t = event.changedTouches[0];
+      if (now - viewerZoom.lastTap < 300) {
+        viewerZoom.lastTap = 0;
+        if (viewerZoom.scale > 1) {
+          resetViewerZoom();
+        } else {
+          const rect = media.getBoundingClientRect();
+          zoomViewerAt(media, t.clientX, t.clientY, 1, 0, 0, rect.left, rect.top, VIEWER_DOUBLE_TAP_ZOOM);
+          applyViewerZoom();
+        }
+        event.preventDefault();
+      } else {
+        viewerZoom.lastTap = now;
+      }
+    },
+    { passive: false }
+  );
+}
+
 function bindViewerSwipe() {
   let startX = 0;
   let startY = 0;
@@ -1355,6 +1513,10 @@ function bindViewerSwipe() {
     "touchstart",
     (event) => {
       if (!event.changedTouches.length) return;
+      if (event.touches.length > 1) {
+        tracking = false;
+        return;
+      }
       tracking = true;
       startX = event.changedTouches[0].clientX;
       startY = event.changedTouches[0].clientY;
@@ -1366,6 +1528,7 @@ function bindViewerSwipe() {
     (event) => {
       if (!tracking || !event.changedTouches.length) return;
       tracking = false;
+      if (viewerZoom.scale > 1 || viewerZoom.usedMultiTouch) return;
       const dx = event.changedTouches[0].clientX - startX;
       const dy = event.changedTouches[0].clientY - startY;
       if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
@@ -2355,6 +2518,7 @@ function bindEvents() {
     if (event.key === "ArrowRight") stepActiveViewer(1);
   });
   bindViewerSwipe();
+  bindViewerZoom();
   bindInfiniteScroll();
 }
 

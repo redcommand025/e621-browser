@@ -872,6 +872,8 @@ button.viewer-brand:focus-visible {
 
 .viewer-stage {
   min-height: 36dvh;
+  overflow: hidden;
+  touch-action: pan-y;
   display: grid;
   place-items: center;
   background: #000;
@@ -883,6 +885,15 @@ button.viewer-brand:focus-visible {
   max-height: 62dvh;
   width: auto;
   height: auto;
+}
+
+.viewer-stage.is-zoomed {
+  touch-action: none;
+}
+
+.viewer-stage.is-zoomed img,
+.viewer-stage.is-zoomed video {
+  will-change: transform;
 }
 
 .viewer-tags {
