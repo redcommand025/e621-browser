@@ -21,13 +21,6 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Viewer for stills and webm/mp4 videos, with sample/original and alternate video versions. If a post belongs to a family, a Parent thumbnail is shown on the left and Child or Sibling thumbnails on the right
 - Works when `localStorage` is blocked (confirmation, blacklist, saved searches, and remembered accounts then last only for the tab)
 
-## Always-on exclusions
-
-Posts tagged `young`, `loli`, `shota`, or `cub` are always hidden, including in favorites, pools, popular, pool covers, and family thumbnails. The site adds `-young` (and the other blocked tags, within e621's 40-tag search limit) to every tag query and also filters returned tag lists in the browser. Pools whose names include those terms are not listed. There is no setting or URL parameter to turn this off.
-
-## What signing in changes
-
-e621.net hides some tags from guests with a client-side default blacklist (including gore, snuff, rape, `young -rating:s`, `diaper -rating:s`, feces, urine, fart_fetish, `realistic_feral rating:e`, and politics). The public API does not apply that list, and e621-red does not copy it, so those tags were already visible here whether or not you were signed in. Signing in does not import your e621 account blacklist either. This site's own blacklist, plus the always-hidden tags above, still apply. Signing in mainly adds your API key to every request so you can use private favorites and other authenticated API features.
 
 ## Storage and backups
 
