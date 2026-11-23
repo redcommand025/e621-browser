@@ -592,6 +592,7 @@ function renderVideo(post, chosenUrl, sources) {
   const video = document.createElement("video");
   video.controls = true;
   video.playsInline = true;
+  video.loop = true;
   video.preload = "metadata";
   const source = document.createElement("source");
   const selected = sources.find((item) => item.url === chosenUrl) || sources[0];
