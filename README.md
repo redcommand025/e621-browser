@@ -9,7 +9,7 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - 18+ confirmation before any API request
 - Dark theme with a black canvas, red edge glow, and a deep crimson hexagon pattern
 - Posts (the default) loads recent posts and puts tag search with autocomplete in the top bar
-- Posts sub-bar: Hot, Popular, Favorites, Blacklist, and Saved
+- Posts sub-bar: Hot, Popular, Favorites, Blacklist, Saved, and Related tags. Related tags lists tags often used with the current search (with post counts); tap one to add it to the search
 - Hot puts `order:hot` in the search bar and runs it
 - Popular: today's popular posts, with a 3×3 control grid (`«prev` / Day, Week, or Month / `next»`) to change the scale and move the date
 - Sign in sits on the right of the Posts and Pools bar. It checks your e621 username and API key, then shows your name on that button. Tapping it again opens Sign out. While signed in, every API request includes your key so private favorites and other authenticated features work. A Remember my account checkbox saves the username and key on this device when storage works
@@ -19,6 +19,10 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Rating filter (defaults to all ratings) and sorting (`order:` metatags)
 - Responsive, lazy-loaded thumbnail grid
 - Viewer for stills and webm/mp4 videos, with sample/original and alternate video versions. If a post belongs to a family, a Parent thumbnail is shown on the left and Child or Sibling thumbnails on the right
+- Under the image or video: Favorite/Unfavorite, Upvote, and Downvote with the current score and favorite count. They need you to be signed in (otherwise they open Sign in). Voting the same way twice removes the vote
+- Translation notes over images, with a Hide/Show notes toggle. The notes move with pinch zoom and panning; tap a note to read it
+- Comments (loaded when you scroll to them) above the tags, post counts next to every tag, and a Details section under the tags (artist, uploader, upload date, file type, dimensions, size, sources, rating, post ID, MD5, and description)
+- Comments, notes, and descriptions are rendered from DText as plain text with basic formatting; raw HTML is never inserted
 - Works when `localStorage` is blocked (confirmation, blacklist, saved searches, and remembered accounts then last only for the tab)
 
 
@@ -32,6 +36,9 @@ If your browser cannot persist storage, the 18+ screen will appear again the nex
 npm test
 npm install
 npm run test:browser
+npm run test:viewer
 ```
+
+`npm run test:viewer` checks the viewer extras (notes alignment under real touch pinch/pan, comments, details, tag counts, related tags, and favorite/vote requests) against mocked API responses, so it never writes to a real account.
 
 Browser tests use safe (`rating:s`) queries only.

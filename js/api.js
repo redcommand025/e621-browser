@@ -400,3 +400,104 @@ export function formatCount(value) {
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}k`;
   return String(n);
 }
+
+/* ---------- Post viewer extras ---------- */
+
+export const COMMENT_PAGE_LIMIT = 20;
+
+function requireAuth() {
+  if (hasBasicAuth()) return;
+  const error = new Error("Sign in to do that.");
+  error.code = "auth";
+  throw error;
+}
+
+/**
+ * Authenticated write (POST/DELETE). e621 answers CORS preflights for these
+ * endpoints with Access-Control-Allow-Origin: * and allows the Authorization
+ * header, so a signed-in browser can call them directly.
+ */
+export function sendJson(method, path, body = {}, { signal } = {}) {
+  requireAuth();
+  return enqueueRequest(async () => {
+    const url = buildApiUrl(path);
+    const headers = requestHeaders();
+    const form = new URLSearchParams();
+    for (const [key, value] of Object.entries(body || {})) {
+      if (value == null || value === "") continue;
+      form.set(key, String(value));
+    }
+    const init = { method, headers, signal, mode: "cors" };
+    if (method !== "GET" && method !== "DELETE") {
+      headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8";
+      init.body = form.toString();
+    }
+    let response;
+    try {
+      response = await fetch(url, init);
+    } catch (error) {
+      if (error && error.name === "AbortError") throw error;
+      const err = new Error("Could not reach e621. This may be a network or CORS block.");
+      err.code = "network";
+      throw err;
+    }
+    if (response.status === 204) return null;
+    return parseResponse(response);
+  });
+}
+
+export async function favoritePost(postId) {
+  return sendJson("POST", "/favorites.json", { post_id: Number(postId) });
+}
+
+export async function unfavoritePost(postId) {
+  return sendJson("DELETE", "/favorites/" + Number(postId) + ".json");
+}
+
+/** params: { score: "1" | "-1", no_unvote?: "true" } */
+export async function votePost(postId, params) {
+  return sendJson("POST", "/posts/" + Number(postId) + "/votes.json", params);
+}
+
+export async function fetchComments(postId, { page = 1, limit = COMMENT_PAGE_LIMIT, signal } = {}) {
+  const data = await fetchJson(
+    "/comments.json",
+    {
+      group_by: "comment",
+      "search[post_id]": String(Number(postId)),
+      limit: String(limit),
+      page: String(page),
+    },
+    { signal }
+  );
+  // e621 returns {"comments": []} instead of [] when there are none.
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.comments)) return data.comments;
+  return [];
+}
+
+export async function fetchNotes(postId, { signal } = {}) {
+  const data = await fetchJson(
+    "/notes.json",
+    { "search[post_id]": String(Number(postId)), "search[is_active]": "true", limit: "100" },
+    { signal }
+  );
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.notes)) return data.notes;
+  return [];
+}
+
+/**
+ * Tag records (name, post_count, related_tags, category) for a batch of names.
+ * search[name] accepts a comma list; search[name_comma] is ignored by e621.
+ */
+export async function fetchTagsByNames(names, { signal } = {}) {
+  const list = (names || []).filter(Boolean);
+  if (!list.length) return [];
+  const data = await fetchJson(
+    "/tags.json",
+    { "search[name]": list.join(","), limit: String(Math.min(320, Math.max(list.length, 1))) },
+    { signal }
+  );
+  return Array.isArray(data) ? data : [];
+}

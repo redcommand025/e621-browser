@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/filter.test.js tests/api.test.js",
-    "test:browser": "node tests/browser-test.mjs"
+    "test": "node --test tests/filter.test.js tests/api.test.js tests/dtext.test.js tests/postinfo.test.js",
+    "test:browser": "node tests/browser-test.mjs",
+    "test:viewer": "node tests/viewer-extras-test.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "^24.31.0"

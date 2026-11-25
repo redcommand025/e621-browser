@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261122i" />
+    <link rel="stylesheet" href="css/styles.css?v=20261124a" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -74,7 +74,12 @@
           <button type="button" data-sub="favorites" aria-selected="false">Favorites</button>
           <button type="button" data-sub="blacklist" aria-selected="false">Blacklist</button>
           <button type="button" data-sub="saved" aria-selected="false">Saved</button>
+          <button type="button" id="related-btn" class="related-btn" aria-expanded="false" aria-controls="related-panel">Related tags</button>
         </nav>
+        <section id="related-panel" class="related-panel" aria-label="Related tags" hidden>
+          <p id="related-note" class="muted tight"></p>
+          <ul id="related-list" class="related-list"></ul>
+        </section>
       </div>
 
       <header class="top">
@@ -220,10 +225,30 @@
         </div>
       </div>
       <div id="viewer-stage" class="viewer-stage"></div>
+      <div id="viewer-actions" class="viewer-actions">
+        <p id="viewer-stats" class="viewer-stats" aria-label="Post score"></p>
+        <div class="viewer-action-buttons">
+          <button type="button" id="viewer-fav" class="secondary action-fav" aria-pressed="false">☆ Favorite</button>
+          <button type="button" id="viewer-up" class="secondary action-up" aria-pressed="false" aria-label="Upvote">⬆ Up</button>
+          <button type="button" id="viewer-down" class="secondary action-down" aria-pressed="false" aria-label="Downvote">⬇ Down</button>
+          <button type="button" id="viewer-notes-toggle" class="secondary action-notes" aria-pressed="true" hidden>Notes</button>
+        </div>
+        <p id="viewer-action-status" class="viewer-action-status" role="status" aria-live="polite" hidden></p>
+      </div>
       <div id="viewer-alts" class="viewer-alts"></div>
       <section id="viewer-family" class="viewer-family" hidden aria-label="Post family"></section>
-      <p id="viewer-stats" class="viewer-stats" aria-label="Post score"></p>
+      <section id="viewer-comments" class="viewer-comments" aria-label="Comments">
+        <h2 class="viewer-section-title" id="viewer-comments-title">Comments</h2>
+        <div id="viewer-comments-list" class="comment-list"></div>
+        <p id="viewer-comments-status" class="muted tight"></p>
+        <button type="button" id="viewer-comments-more" class="secondary" hidden>Load older comments</button>
+      </section>
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
+      <section id="viewer-details" class="viewer-details" aria-labelledby="viewer-details-title">
+        <h2 class="viewer-section-title" id="viewer-details-title">Details</h2>
+        <dl id="viewer-details-list" class="details-list"></dl>
+        <div id="viewer-description" class="post-description dtext" hidden></div>
+      </section>
     </dialog>
 
     <dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
@@ -249,6 +274,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261122i"></script>
+    <script type="module" src="js/app.js?v=20261124a"></script>
   </body>
 </html>
