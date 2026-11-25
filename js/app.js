@@ -1,6 +1,7 @@
 import {
   buildSearchQuery,
   applyClientFilters,
+  blacklistForQuery,
   filterPools,
   filterPosts,
   filterSuggestions,
@@ -22,13 +23,13 @@ import {
   tagName,
   tokenMetatag,
   tokenize,
-} from "./filter.js?v=20261125a";
+} from "./filter.js?v=20261125b";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261125a";
+} from "./storage.js?v=20261125b";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -37,6 +38,9 @@ import {
   favoritePost,
   fetchAutocomplete,
   fetchComments,
+  fetchUser,
+  postComment,
+  updateAccountBlacklist,
   fetchNotes,
   fetchTagsByNames,
   fetchTagAliases,
@@ -60,16 +64,33 @@ import {
   verifyBasicAuth,
   videoSources,
   votePost,
-} from "./api.js?v=20261125a";
-import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125a";
+} from "./api.js?v=20261125b";
+import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125b";
 import {
   METATAGS,
   SEARCH_SYNTAX_HELP,
   metatagSuggestions,
   singleSearchTag,
   splitTermPrefix,
-} from "./search.js?v=20261125a";
-import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125a";
+} from "./search.js?v=20261125b";
+import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125b";
+import {
+  RATINGS,
+  RATING_NAMES,
+  downloadFilename,
+  normalizeRatings,
+  profileSearches,
+  profileStats,
+} from "./account.js?v=20261125b";
+import {
+  mergeBlacklists,
+  normalizeBlacklistLine,
+  normalizeBlacklistLines,
+  parseBlacklistText,
+  sameBlacklist,
+  serializeBlacklist,
+  singleTagLines,
+} from "./blacklist.js?v=20261125b";
 import {
   activeNotes,
   aggregatePageTags,
@@ -87,7 +108,7 @@ import {
   tagNameBatches,
   tagRelations,
   voteRequestParams,
-} from "./postinfo.js?v=20261125a";
+} from "./postinfo.js?v=20261125b";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -97,6 +118,12 @@ const AUTH_USER_KEY = "e621-browser:auth-user";
 const AUTH_KEY_KEY = "e621-browser:auth-key";
 const SAVED_KEY = "e621-browser:saved-searches";
 const COMMENTS_HIDDEN_KEY = "e621-browser:comments-hidden";
+const DISPLAY_KEY = "e621-browser:display";
+// Last blacklist both sides agreed on, per account, for the three-way merge.
+const BLACKLIST_BASE_KEY = "e621-browser:blacklist-synced";
+const BLACKLIST_SYNC_DEBOUNCE_MS = 700;
+// Posts with this many comments or fewer load in one request.
+const COMMENTS_ONE_PAGE = 75;
 const LONG_PRESS_MS = 500;
 const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
@@ -113,7 +140,45 @@ const els = {
   form: document.getElementById("search-form"),
   search: document.getElementById("search"),
   suggest: document.getElementById("suggest"),
-  rating: document.getElementById("rating"),
+  ratingBoxes: RATINGS.map((r) => document.getElementById("rating-" + r)).filter(Boolean),
+  displayBtn: document.getElementById("display-btn"),
+  displayMenu: document.getElementById("display-menu"),
+  displayClose: document.getElementById("display-close"),
+  displayNote: document.getElementById("display-note"),
+  sortLabel: document.getElementById("sort-label"),
+  accountMenu: document.getElementById("account-menu"),
+  accountMenuProfile: document.getElementById("account-menu-profile"),
+  accountMenuAvatar: document.getElementById("account-menu-avatar"),
+  accountMenuName: document.getElementById("account-menu-name"),
+  accountMenuFavorites: document.getElementById("account-menu-favorites"),
+  accountMenuLogout: document.getElementById("account-menu-logout"),
+  profileDialog: document.getElementById("profile-dialog"),
+  profileClose: document.getElementById("profile-close"),
+  profileOpen: document.getElementById("profile-open"),
+  profileAvatar: document.getElementById("profile-avatar"),
+  profileName: document.getElementById("profile-name"),
+  profileLevel: document.getElementById("profile-level"),
+  profileJoined: document.getElementById("profile-joined"),
+  profileStatus: document.getElementById("profile-status"),
+  profileStats: document.getElementById("profile-stats"),
+  profileSections: document.getElementById("profile-sections"),
+  profileAbout: document.getElementById("profile-about"),
+  profileAboutWrap: document.getElementById("profile-about-wrap"),
+  profileArtinfo: document.getElementById("profile-artinfo"),
+  profileArtinfoWrap: document.getElementById("profile-artinfo-wrap"),
+  profileSettings: document.getElementById("profile-settings"),
+  blacklistSyncStatus: document.getElementById("blacklist-sync-status"),
+  blacklistSyncNow: document.getElementById("blacklist-sync-now"),
+  viewerDownload: document.getElementById("viewer-download"),
+  viewerFullscreen: document.getElementById("viewer-fullscreen"),
+  commentAdd: document.getElementById("comment-add"),
+  commentForm: document.getElementById("comment-form"),
+  commentText: document.getElementById("comment-text"),
+  commentPost: document.getElementById("comment-post"),
+  commentPreviewBtn: document.getElementById("comment-preview-btn"),
+  commentCancel: document.getElementById("comment-cancel"),
+  commentPreview: document.getElementById("comment-preview"),
+  commentStatus: document.getElementById("comment-status"),
   sort: document.getElementById("sort"),
   preferSample: document.getElementById("prefer-sample"),
   subNav: document.getElementById("sub-nav"),
@@ -266,7 +331,15 @@ const state = {
   notesVisible: true,
   notesCache: {},
   noteSeq: 0,
-  comments: { postId: null, page: 0, loading: false, done: false, seq: 0 },
+  comments: { postId: null, page: 0, loading: false, done: false, seq: 0, limit: COMMENT_PAGE_LIMIT },
+  commentBusy: false,
+  display: { size: "normal", shape: "cropped" },
+  authUser: null,
+  avatarCache: new Map(),
+  avatarSeq: 0,
+  profileSeq: 0,
+  blacklistSync: { busy: false, again: false, timer: 0, lastOk: 0 },
+  downloadBusy: false,
   commentsObserver: null,
   tagCounts: new Map(),
   tagCategories: new Map(),
@@ -297,16 +370,8 @@ function parseStoredList(raw, asTags = false) {
   return asTags ? tokenize(raw) : [];
 }
 
-function normalizeBlacklist(tags) {
-  const seen = new Set();
-  const out = [];
-  for (const raw of tags || []) {
-    const name = tagName(raw);
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    out.push(name);
-  }
-  return out;
+function normalizeBlacklist(lines) {
+  return normalizeBlacklistLines(lines);
 }
 
 function blacklistTags() {
@@ -322,24 +387,29 @@ function orderFromSearch() {
   return token || "";
 }
 
+/** Allowed rating letters from the display menu's checkboxes (never empty). */
+function selectedRatings() {
+  const picked = els.ratingBoxes.filter((box) => box.checked).map((box) => box.value);
+  return normalizeRatings(picked);
+}
+
 function currentQuery() {
   return buildSearchQuery({
     userQuery: els.search.value,
-    rating: els.rating.value,
+    rating: selectedRatings(),
     order: els.sort.value,
     blacklist: blacklistTags(),
   });
 }
 
-// The Rating select filters results unless the search sets its own rating:.
-// Blacklisted tags the search asks for by name are not hidden.
+// The rating checkboxes filter results unless the search sets its own rating:.
+// Blacklist lines naming a tag the search asks for are not applied.
 function clientFilter(posts, { query = null } = {}) {
-  let rating = els.rating.value;
+  let rating = selectedRatings();
   let blacklist = blacklistTags();
   if (query != null) {
     if (queryHasMetatag(query, "rating")) rating = "all";
-    const named = new Set(tokenize(query).filter((t) => !tokenMetatag(t)).map((t) => tagName(t)));
-    blacklist = blacklist.filter((tag) => !named.has(tag));
+    blacklist = blacklistForQuery(blacklist, query);
   }
   return applyClientFilters(posts, { rating, blacklist });
 }
@@ -347,7 +417,7 @@ function clientFilter(posts, { query = null } = {}) {
 function exclusionTagString() {
   return buildSearchQuery({
     userQuery: "",
-    rating: els.rating.value,
+    rating: selectedRatings(),
     order: "",
     blacklist: blacklistTags(),
   }).tags;
@@ -611,6 +681,11 @@ function renderGrid(reset) {
     button.type = "button";
     button.className = "thumb";
     button.dataset.index = String(i);
+    // Used by the "Full" thumbnail shape to keep each picture's own shape.
+    const dims = (post.files && (post.files.preview || post.files.original)) || post.preview || post.file || {};
+    const w = Number(dims.width);
+    const h = Number(dims.height);
+    if (w > 0 && h > 0) button.style.setProperty("--thumb-ratio", String(Math.min(3, Math.max(1 / 3, w / h))));
     const img = document.createElement("img");
     const src = previewUrl(post) || sampleImageUrl(post);
     img.alt = `Post ${post.id}`;
@@ -1429,6 +1504,10 @@ function openViewer(index) {
 }
 
 function closeViewer() {
+  if (fullscreenElement()) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+  }
   try {
     if (els.viewerStage) clearViewerMedia();
     if (els.viewerTags) els.viewerTags.innerHTML = "";
@@ -1852,6 +1931,7 @@ function resetViewerComments(post) {
 
 function renderComment(comment) {
   const item = document.createElement("article");
+  if (comment.id != null) item.dataset.id = String(Number(comment.id));
   item.className = "comment";
   const head = document.createElement("header");
   head.className = "comment-head";
@@ -1887,13 +1967,17 @@ function loadMoreComments() {
   const page = c.page + 1;
   if (els.viewerCommentsStatus) els.viewerCommentsStatus.textContent = "Loading comments…";
   if (els.viewerCommentsMore) els.viewerCommentsMore.disabled = true;
-  fetchComments(post.id, { page })
+  fetchComments(post.id, { page, limit: c.limit })
     .then((list) => {
       if (seq !== c.seq) return;
       c.page = page;
-      const visible = list.filter((comment) => comment && !comment.is_hidden);
+      // Oldest first; later pages hold newer comments and go underneath.
+      const visible = list
+        .filter((comment) => comment && !comment.is_hidden)
+        .filter((comment) => !els.viewerCommentsList.querySelector('.comment[data-id="' + Number(comment.id) + '"]'))
+        .sort((a, b) => Number(a.id) - Number(b.id));
       for (const comment of visible) els.viewerCommentsList.append(renderComment(comment));
-      c.done = list.length < COMMENT_PAGE_LIMIT;
+      c.done = list.length < c.limit;
       const total = els.viewerCommentsList.childElementCount;
       els.viewerCommentsStatus.textContent = total ? "" : "No comments yet.";
       els.viewerCommentsMore.hidden = c.done;
@@ -1936,6 +2020,8 @@ function renderViewerComments(post) {
   resetViewerComments(post);
   syncCommentsToggle();
   const count = postCommentCount(post);
+  state.comments.limit = count != null && count <= COMMENTS_ONE_PAGE ? COMMENTS_ONE_PAGE : COMMENT_PAGE_LIMIT;
+  resetCommentCompose();
   els.viewerCommentsTitle.textContent = count != null ? "Comments (" + count + ")" : "Comments";
   if (state.commentsHidden) {
     // Collapsed: nothing is fetched until the user shows comments again.
@@ -2131,7 +2217,7 @@ async function openRelatedPanel() {
   const seq = ++state.relatedSeq;
   const query = els.search.value;
   const searched = searchTagNames(query);
-  const exclude = [...tokenize(query).map((t) => tagName(t)), ...blacklistTags()];
+  const exclude = [...tokenize(query).map((t) => tagName(t)), ...singleTagLines(blacklistTags())];
   els.relatedList.textContent = "";
   els.relatedNote.textContent = "Loading related tags…";
   let items = [];
@@ -2192,6 +2278,10 @@ function bindViewerExtras() {
   if (els.viewerNotesToggle) els.viewerNotesToggle.addEventListener("click", toggleNotes);
   if (els.viewerCommentsMore) els.viewerCommentsMore.addEventListener("click", loadMoreComments);
   if (els.viewerCommentsToggle) els.viewerCommentsToggle.addEventListener("click", toggleComments);
+  bindCommentCompose();
+  if (els.viewerDownload) els.viewerDownload.addEventListener("click", downloadCurrentPost);
+  if (els.viewerFullscreen) els.viewerFullscreen.addEventListener("click", toggleViewerFullscreen);
+  for (const type of ["fullscreenchange", "webkitfullscreenchange"]) document.addEventListener(type, onFullscreenChange);
   bindTagTools();
   if (els.relatedBtn) els.relatedBtn.addEventListener("click", toggleRelatedPanel);
   window.addEventListener("resize", layoutNotesLayer);
@@ -2411,14 +2501,12 @@ async function copyText(value) {
 function toggleBlacklistTag(name) {
   if (state.blacklist.includes(name)) {
     state.blacklist = state.blacklist.filter((entry) => entry !== name);
-    persistBlacklist();
-    renderBlacklist();
-    return "Removed " + name + " from your blacklist.";
+    blacklistChanged();
+    return "Removed " + name + " from your blacklist." + syncSuffix();
   }
   state.blacklist.push(name);
-  persistBlacklist();
-  renderBlacklist();
-  return "Added " + name + " to your blacklist. It applies to your next search.";
+  blacklistChanged();
+  return "Added " + name + " to your blacklist. It applies to your next search." + syncSuffix();
 }
 
 async function runTagMenuAction(action) {
@@ -3059,7 +3147,7 @@ function hidePostsSubPanels() {
 }
 
 function updateSortVisibility() {
-  const sortLabel = els.sort && els.sort.closest("label");
+  const sortLabel = els.sortLabel || (els.sort && els.sort.closest("label"));
   if (sortLabel) sortLabel.hidden = state.view === "pools" || state.sub === "popular";
 }
 
@@ -3167,37 +3255,34 @@ function renderBlacklist() {
     remove.type = "button";
     remove.className = "secondary";
     remove.textContent = "Remove";
+    remove.setAttribute("aria-label", "Remove " + tag);
     remove.addEventListener("click", () => {
       state.blacklist = state.blacklist.filter((entry) => entry !== tag);
-      persistBlacklist();
-      renderBlacklist();
-      setStatus("Removed " + tag + " from your blacklist.");
+      blacklistChanged();
+      setStatus("Removed " + tag + " from your blacklist." + syncSuffix());
     });
     item.append(name, remove);
     els.blacklistList.append(item);
   }
   if (els.blacklistEmpty) els.blacklistEmpty.hidden = state.blacklist.length > 0;
+  renderBlacklistSync();
 }
 
+// One entry is one e621 blacklist line: "canine rating:e" hides posts with both.
 function addBlacklistTag(raw) {
-  const tokens = tokenize(raw);
-  if (!tokens.length) {
+  const line = normalizeBlacklistLine(raw);
+  if (!line) {
     setStatus("Enter a tag to blacklist.", "error");
     return;
   }
-  const names = normalizeBlacklist(tokens);
-  let added = 0;
-  for (const name of names) {
-    if (!state.blacklist.includes(name)) {
-      state.blacklist.push(name);
-      added += 1;
-    }
-  }
-  persistBlacklist();
-  renderBlacklist();
   if (els.blacklistAdd) els.blacklistAdd.value = "";
-  if (!added) setStatus("That tag is already on your blacklist.");
-  else setStatus("Blacklist updated" + (isStoragePersistent() ? "." : ". Storage is blocked, so this lasts only until this tab closes."));
+  if (state.blacklist.includes(line)) {
+    setStatus("That tag is already on your blacklist.");
+    return;
+  }
+  state.blacklist.push(line);
+  blacklistChanged();
+  setStatus("Blacklist updated" + (isStoragePersistent() ? "." : ". Storage is blocked, so this lasts only until this tab closes.") + syncSuffix());
 }
 
 function persistSaved() {
@@ -3353,13 +3438,25 @@ function updateAuthStatus(message, kind) {
   if (els.accountBtn) {
     els.accountBtn.textContent = signed ? name : "Sign in";
     els.accountBtn.setAttribute("data-signed", signed ? "true" : "false");
-    els.accountBtn.setAttribute("aria-label", signed ? "Account, signed in as " + name : "Sign in");
+    els.accountBtn.setAttribute("aria-label", signed ? "Account menu, signed in as " + name : "Sign in");
+    if (signed) {
+      els.accountBtn.setAttribute("aria-haspopup", "menu");
+      els.accountBtn.setAttribute("aria-controls", "account-menu");
+      els.accountBtn.setAttribute("aria-expanded", els.accountMenu && !els.accountMenu.hidden ? "true" : "false");
+    } else {
+      els.accountBtn.setAttribute("aria-haspopup", "dialog");
+      els.accountBtn.setAttribute("aria-controls", "account-dialog");
+      els.accountBtn.removeAttribute("aria-expanded");
+      closeAccountMenu({ focus: false });
+    }
   }
+  if (els.accountMenuName) els.accountMenuName.textContent = signed ? name : "";
+  renderBlacklistSync();
   if (els.accountTitle) els.accountTitle.textContent = signed ? "Account" : "Sign in";
   if (els.favOpenAccount) els.favOpenAccount.hidden = signed;
   if (els.favAccountNote) {
     els.favAccountNote.textContent = signed
-      ? "Signed in as " + name + ". Private favorites use this account. Your e621 account blacklist is not imported; only this site's blacklist and the always-hidden tags apply."
+      ? "Signed in as " + name + ". Private favorites use this account, and your Blacklist syncs with your e621 account."
       : "Use Sign in next to Posts and Pools for private favorites and full API access. Public favorites still work with just a username.";
   }
   if (els.authClear) els.authClear.disabled = !signed;
@@ -3444,8 +3541,11 @@ function signIn() {
         removeAuthKey();
       }
       if (els.authKey) els.authKey.value = "";
+      state.authUser = user && typeof user === "object" ? user : null;
       updateAuthStatus(signedInNote(), "ok");
       setStatus(signedInNote());
+      loadAccountAvatar();
+      syncBlacklist({ user: state.authUser });
     })
     .catch(function (error) {
       if (error && error.name === "AbortError") return;
@@ -3460,6 +3560,11 @@ function signIn() {
 }
 
 function signOut() {
+  window.clearTimeout(state.blacklistSync.timer);
+  state.authUser = null;
+  state.avatarSeq += 1;
+  if (els.accountMenuAvatar) setAvatar(els.accountMenuAvatar, null, "");
+  closeAccountMenu({ focus: false });
   clearBasicAuth();
   removeAuthKey();
   if (els.authKey) els.authKey.value = "";
@@ -3479,7 +3584,7 @@ async function loadFavorites({ page, append }) {
   if (els.authRemember && els.authRemember.checked) setItem(FAV_USER_KEY, username);
   const built = buildSearchQuery({
     userQuery: `fav:${username}`,
-    rating: els.rating.value,
+    rating: selectedRatings(),
     order: els.sort.value,
     blacklist: blacklistTags(),
   });
@@ -3729,6 +3834,813 @@ function reloadCurrent({ page = 1, append = false } = {}) {
   return loadPage({ page, append });
 }
 
+/* ---------- Display options (grid button) ---------- */
+
+function applyDisplayClasses() {
+  const { size, shape } = state.display;
+  for (const target of [els.grid, document.body]) {
+    if (!target) continue;
+    target.classList.toggle("thumbs-large", size === "large");
+    target.classList.toggle("thumbs-small", size === "small");
+    target.classList.toggle("thumbs-full", shape === "full");
+  }
+  if (els.displayMenu) {
+    for (const input of els.displayMenu.querySelectorAll('input[name="thumb-size"]')) input.checked = input.value === size;
+    for (const input of els.displayMenu.querySelectorAll('input[name="thumb-shape"]')) input.checked = input.value === shape;
+  }
+}
+
+function saveDisplayPrefs() {
+  setItem(
+    DISPLAY_KEY,
+    JSON.stringify({
+      size: state.display.size,
+      shape: state.display.shape,
+      ratings: selectedRatings(),
+      sort: els.sort ? els.sort.value : "",
+    })
+  );
+}
+
+function restoreDisplayPrefs() {
+  let saved = null;
+  try {
+    saved = JSON.parse(getItem(DISPLAY_KEY) || "null");
+  } catch {
+    saved = null;
+  }
+  if (saved && typeof saved === "object") {
+    if (["large", "normal", "small"].includes(saved.size)) state.display.size = saved.size;
+    if (["full", "cropped"].includes(saved.shape)) state.display.shape = saved.shape;
+    if (Array.isArray(saved.ratings)) {
+      const allowed = normalizeRatings(saved.ratings);
+      for (const box of els.ratingBoxes) box.checked = allowed.includes(box.value);
+    }
+    if (els.sort && typeof saved.sort === "string" && [...els.sort.options].some((o) => o.value === saved.sort)) {
+      els.sort.value = saved.sort;
+    }
+  }
+  applyDisplayClasses();
+  syncRatingNote();
+}
+
+function syncRatingNote(message) {
+  if (!els.displayNote) return;
+  if (message) {
+    els.displayNote.textContent = message;
+    return;
+  }
+  const allowed = selectedRatings();
+  els.displayNote.textContent =
+    allowed.length === RATINGS.length ? "Showing all ratings." : "Showing " + allowed.map((r) => RATING_NAMES[r]).join(" and ") + " posts.";
+}
+
+function onRatingBoxChange(box) {
+  if (!els.ratingBoxes.some((item) => item.checked)) {
+    box.checked = true;
+    syncRatingNote("Keep at least one rating checked.");
+    return;
+  }
+  syncRatingNote();
+  saveDisplayPrefs();
+  if (els.app.hidden) return;
+  if (state.sub === "blacklist" || state.sub === "saved") return;
+  reloadCurrent({ page: 1, append: false });
+}
+
+function openDisplayMenu() {
+  if (!els.displayMenu) return;
+  closeAccountMenu({ focus: false });
+  els.displayMenu.hidden = false;
+  els.displayBtn.setAttribute("aria-expanded", "true");
+  syncRatingNote();
+  const first = els.displayMenu.querySelector("input:checked, input, select");
+  if (first) first.focus({ preventScroll: true });
+}
+
+function closeDisplayMenu({ focus = false } = {}) {
+  if (!els.displayMenu || els.displayMenu.hidden) return;
+  els.displayMenu.hidden = true;
+  if (els.displayBtn) {
+    els.displayBtn.setAttribute("aria-expanded", "false");
+    if (focus) els.displayBtn.focus({ preventScroll: true });
+  }
+}
+
+function bindDisplayMenu() {
+  if (!els.displayBtn || !els.displayMenu) return;
+  els.displayBtn.addEventListener("click", () => {
+    if (els.displayMenu.hidden) openDisplayMenu();
+    else closeDisplayMenu();
+  });
+  if (els.displayClose) els.displayClose.addEventListener("click", () => closeDisplayMenu({ focus: true }));
+  els.displayMenu.addEventListener("change", (event) => {
+    const input = event.target;
+    if (input.name === "thumb-size" && input.checked) {
+      state.display.size = input.value;
+      applyDisplayClasses();
+      saveDisplayPrefs();
+    } else if (input.name === "thumb-shape" && input.checked) {
+      state.display.shape = input.value;
+      applyDisplayClasses();
+      saveDisplayPrefs();
+    }
+  });
+  els.displayMenu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeDisplayMenu({ focus: true });
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (els.displayMenu.hidden) return;
+    if (els.displayMenu.contains(event.target) || els.displayBtn.contains(event.target)) return;
+    closeDisplayMenu();
+  });
+}
+
+/* ---------- Account menu ---------- */
+
+function onAccountButton() {
+  if (!hasBasicAuth()) {
+    openAccountDialog();
+    return;
+  }
+  if (els.accountMenu && els.accountMenu.hidden) openAccountMenu();
+  else closeAccountMenu({ focus: true });
+}
+
+function accountMenuItems() {
+  return els.accountMenu ? [...els.accountMenu.querySelectorAll('[role="menuitem"]')] : [];
+}
+
+function openAccountMenu() {
+  if (!els.accountMenu) return;
+  closeDisplayMenu();
+  if (els.accountMenuName) els.accountMenuName.textContent = basicAuthUsername();
+  els.accountMenu.hidden = false;
+  els.accountBtn.setAttribute("aria-expanded", "true");
+  loadAccountAvatar();
+  const first = accountMenuItems()[0];
+  if (first) first.focus({ preventScroll: true });
+}
+
+function closeAccountMenu({ focus = false } = {}) {
+  if (!els.accountMenu || els.accountMenu.hidden) return;
+  els.accountMenu.hidden = true;
+  if (els.accountBtn) {
+    if (hasBasicAuth()) els.accountBtn.setAttribute("aria-expanded", "false");
+    if (focus) els.accountBtn.focus({ preventScroll: true });
+  }
+}
+
+function bindAccountMenu() {
+  if (!els.accountMenu) return;
+  els.accountMenuProfile.addEventListener("click", () => {
+    closeAccountMenu();
+    openProfile(basicAuthUsername(), { own: true });
+  });
+  els.accountMenuFavorites.addEventListener("click", () => {
+    closeAccountMenu();
+    openOwnFavorites();
+  });
+  els.accountMenuLogout.addEventListener("click", () => {
+    closeAccountMenu();
+    signOut();
+    if (els.accountBtn) els.accountBtn.focus({ preventScroll: true });
+  });
+  els.accountMenu.addEventListener("keydown", (event) => {
+    const items = accountMenuItems();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAccountMenu({ focus: true });
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      items[(index + 1) % items.length].focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      items[(index - 1 + items.length) % items.length].focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      items[0].focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      items[items.length - 1].focus();
+    } else if (event.key === "Tab") {
+      closeAccountMenu();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (els.accountMenu.hidden) return;
+    if (els.accountMenu.contains(event.target) || els.accountBtn.contains(event.target)) return;
+    closeAccountMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !els.accountMenu.hidden) closeAccountMenu({ focus: true });
+  });
+}
+
+function openOwnFavorites() {
+  const name = basicAuthUsername();
+  if (!name) return;
+  closeProfile();
+  if (els.viewer && els.viewer.open) closeViewer();
+  if (els.favUser) els.favUser.value = name;
+  if (state.view !== "posts") setView("posts");
+  resetResults();
+  setSub("favorites");
+  return loadFavorites({ page: 1, append: false });
+}
+
+/** Avatar: the thumbnail of the post set as the profile picture, or the first letter. */
+function setAvatar(node, post, name) {
+  if (!node) return;
+  node.textContent = "";
+  const url = post ? previewUrl(post) || sampleImageUrl(post) : "";
+  if (url) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.decoding = "async";
+    img.src = url;
+    img.addEventListener("error", () => setAvatar(node, null, name));
+    node.append(img);
+    node.dataset.hasImage = "true";
+  } else {
+    node.textContent = String(name || "?").charAt(0).toUpperCase();
+    node.dataset.hasImage = "false";
+  }
+}
+
+/**
+ * The avatar post goes through the same rating checkboxes and blacklist as
+ * everything else; when it is filtered out, the letter is shown instead.
+ */
+async function avatarPost(avatarId) {
+  const id = Number(avatarId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const key = id + "|" + selectedRatings().join("") + "|" + state.blacklist.join("\n");
+  if (state.avatarCache.has(key)) return state.avatarCache.get(key);
+  const posts = await fetchPostsByIds([id], { extraTags: exclusionTagString() });
+  const allowed = clientFilter(posts || []);
+  const post = allowed.find((item) => Number(item.id) === id) || null;
+  state.avatarCache.set(key, post);
+  return post;
+}
+
+function loadAccountAvatar() {
+  const user = state.authUser;
+  const name = basicAuthUsername();
+  if (!els.accountMenuAvatar) return;
+  if (!els.accountMenuAvatar.dataset.hasImage) setAvatar(els.accountMenuAvatar, null, name);
+  if (!user || !user.avatar_id) {
+    setAvatar(els.accountMenuAvatar, null, name);
+    return;
+  }
+  const seq = ++state.avatarSeq;
+  avatarPost(user.avatar_id)
+    .then((post) => {
+      if (seq === state.avatarSeq && hasBasicAuth()) setAvatar(els.accountMenuAvatar, post, name);
+    })
+    .catch(() => {
+      if (seq === state.avatarSeq) setAvatar(els.accountMenuAvatar, null, name);
+    });
+}
+
+/* ---------- Profile page ---------- */
+
+function closeProfile() {
+  state.profileSeq += 1;
+  hideDialog(els.profileDialog);
+}
+
+function runProfileSearch(query) {
+  closeProfile();
+  if (els.viewer && els.viewer.open) closeViewer();
+  if (state.view !== "posts") setView("posts");
+  setSub("");
+  els.search.value = query;
+  return searchFromStart();
+}
+
+function profileDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+}
+
+async function renderProfileStrip(section, query) {
+  const strip = section.querySelector(".profile-strip");
+  const note = section.querySelector(".profile-strip-note");
+  try {
+    const built = buildSearchQuery({ userQuery: query, rating: selectedRatings(), order: "", blacklist: blacklistTags() });
+    const posts = clientFilter(await fetchPosts({ tags: built.tags, page: 1, limit: 6 }), { query });
+    strip.textContent = "";
+    for (const post of posts.slice(0, 6)) {
+      const url = previewUrl(post) || sampleImageUrl(post);
+      if (!url) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "profile-thumb";
+      button.setAttribute("aria-label", "Post " + post.id + ", open " + query);
+      const img = document.createElement("img");
+      img.alt = "Post " + post.id;
+      img.loading = "lazy";
+      img.src = url;
+      button.append(img);
+      button.addEventListener("click", () => runProfileSearch(query));
+      strip.append(button);
+    }
+    note.textContent = strip.childElementCount ? "" : "Nothing to show with your current ratings and blacklist.";
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    note.textContent = (error && error.message) || "Could not load posts.";
+  }
+}
+
+async function openProfile(name, { own = false } = {}) {
+  if (!els.profileDialog || !name) return;
+  const seq = ++state.profileSeq;
+  els.profileName.textContent = name;
+  els.profileLevel.textContent = "";
+  els.profileJoined.textContent = "";
+  els.profileStats.textContent = "";
+  els.profileSections.textContent = "";
+  els.profileAboutWrap.hidden = true;
+  els.profileArtinfoWrap.hidden = true;
+  els.profileSettings.hidden = !own;
+  els.profileOpen.href = "https://e621.net/users/" + encodeURIComponent(name);
+  setAvatar(els.profileAvatar, null, name);
+  els.profileStatus.textContent = "Loading profile…";
+  showDialog(els.profileDialog);
+  let user = own && state.authUser && String(state.authUser.name).toLowerCase() === name.toLowerCase() ? state.authUser : null;
+  try {
+    user = await fetchUser(name);
+    if (own) state.authUser = { ...(state.authUser || {}), ...user };
+  } catch (error) {
+    if (!user) {
+      if (seq === state.profileSeq) els.profileStatus.textContent = "Could not load the profile: " + ((error && error.message) || "error");
+      return;
+    }
+  }
+  if (seq !== state.profileSeq) return;
+  els.profileStatus.textContent = "";
+  els.profileName.textContent = user.name || name;
+  if (user.id) els.profileOpen.href = "https://e621.net/users/" + Number(user.id);
+  els.profileLevel.textContent = [user.level_string, user.is_verified ? "Verified" : "", user.is_banned ? "Banned" : ""].filter(Boolean).join(" · ");
+  const joined = profileDate(user.created_at);
+  els.profileJoined.textContent = joined ? "Joined " + joined : "";
+  for (const stat of profileStats(user)) {
+    const wrap = document.createElement("div");
+    wrap.className = "profile-stat";
+    wrap.dataset.key = stat.key;
+    const dt = document.createElement("dt");
+    dt.textContent = stat.label;
+    const dd = document.createElement("dd");
+    if (stat.search) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "profile-stat-link";
+      link.textContent = typeof stat.value === "number" ? stat.value.toLocaleString() : stat.value;
+      link.setAttribute("aria-label", stat.label + ": " + stat.value + ". Search " + stat.search);
+      link.addEventListener("click", () => runProfileSearch(stat.search));
+      dd.append(link);
+    } else {
+      dd.textContent = typeof stat.value === "number" ? stat.value.toLocaleString() : stat.value;
+    }
+    wrap.append(dt, dd);
+    els.profileStats.append(wrap);
+  }
+  if (user.profile_about) {
+    renderDTextInto(els.profileAbout, user.profile_about);
+    els.profileAboutWrap.hidden = false;
+  }
+  if (user.profile_artinfo) {
+    renderDTextInto(els.profileArtinfo, user.profile_artinfo);
+    els.profileArtinfoWrap.hidden = false;
+  }
+  for (const item of profileSearches(user.name || name, { own })) {
+    const section = document.createElement("section");
+    section.className = "profile-section";
+    section.dataset.key = item.key;
+    const head = document.createElement("div");
+    head.className = "profile-section-head";
+    const title = document.createElement("h3");
+    title.className = "viewer-section-title";
+    title.textContent = item.label;
+    const all = document.createElement("button");
+    all.type = "button";
+    all.className = "secondary profile-see-all";
+    all.textContent = "See all";
+    all.setAttribute("aria-label", "See all: " + item.query);
+    all.addEventListener("click", () => runProfileSearch(item.query));
+    head.append(title, all);
+    const strip = document.createElement("div");
+    strip.className = "profile-strip";
+    const note = document.createElement("p");
+    note.className = "muted tight profile-strip-note";
+    note.textContent = "Loading…";
+    section.append(head, strip, note);
+    els.profileSections.append(section);
+  }
+  if (user.avatar_id) {
+    avatarPost(user.avatar_id)
+      .then((post) => {
+        if (seq === state.profileSeq) setAvatar(els.profileAvatar, post, user.name || name);
+      })
+      .catch(() => {});
+  }
+  // Load the strips one after another (requests are rate-limited anyway).
+  for (const section of els.profileSections.querySelectorAll(".profile-section")) {
+    if (seq !== state.profileSeq) return;
+    const item = profileSearches(user.name || name, { own }).find((entry) => entry.key === section.dataset.key);
+    if (item) await renderProfileStrip(section, item.query);
+  }
+}
+
+function bindProfile() {
+  if (!els.profileDialog) return;
+  els.profileClose.addEventListener("click", closeProfile);
+  els.profileDialog.addEventListener("cancel", () => {
+    state.profileSeq += 1;
+  });
+  if (els.profileSettings) {
+    els.profileSettings.addEventListener("click", () => {
+      closeProfile();
+      openAccountDialog();
+    });
+  }
+  if (els.profileAbout) els.profileAbout.addEventListener("click", handleDTextLink);
+}
+
+/* ---------- Blacklist sync with the e621 account ---------- */
+
+function syncBaseKey(userId) {
+  return BLACKLIST_BASE_KEY + ":" + Number(userId);
+}
+
+function loadSyncBase(userId) {
+  try {
+    const lines = JSON.parse(getItem(syncBaseKey(userId)) || "null");
+    return Array.isArray(lines) ? lines : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSyncBase(userId, lines) {
+  setItem(syncBaseKey(userId), JSON.stringify(normalizeBlacklistLines(lines)));
+}
+
+function syncSuffix() {
+  return hasBasicAuth() && state.authUser && state.authUser.id ? " It syncs to your e621 account." : "";
+}
+
+function setBlacklistSyncStatus(message, kind = "") {
+  if (!els.blacklistSyncStatus) return;
+  els.blacklistSyncStatus.textContent = message;
+  if (kind) els.blacklistSyncStatus.dataset.kind = kind;
+  else delete els.blacklistSyncStatus.dataset.kind;
+}
+
+function renderBlacklistSync() {
+  if (!els.blacklistSyncStatus) return;
+  const signed = hasBasicAuth();
+  if (els.blacklistSyncNow) {
+    els.blacklistSyncNow.hidden = !signed;
+    els.blacklistSyncNow.disabled = state.blacklistSync.busy;
+  }
+  if (!signed) setBlacklistSyncStatus("Sign in to sync this list with your e621 account blacklist.");
+}
+
+function blacklistChanged() {
+  persistBlacklist();
+  renderBlacklist();
+  state.avatarCache.clear();
+  scheduleBlacklistSync();
+}
+
+function scheduleBlacklistSync() {
+  if (!hasBasicAuth() || !state.authUser || !state.authUser.id) return;
+  window.clearTimeout(state.blacklistSync.timer);
+  setBlacklistSyncStatus("Saving to your e621 account…");
+  state.blacklistSync.timer = window.setTimeout(() => syncBlacklist(), BLACKLIST_SYNC_DEBOUNCE_MS);
+}
+
+/**
+ * Two-way sync: read the account's blacklisted_tags, three-way merge with
+ * the local list (base = last synced list), save locally, and PATCH the
+ * account only when its list differs from the merged result.
+ */
+async function syncBlacklist({ user = null, manual = false } = {}) {
+  const sync = state.blacklistSync;
+  window.clearTimeout(sync.timer);
+  if (!hasBasicAuth()) {
+    renderBlacklistSync();
+    return;
+  }
+  if (sync.busy) {
+    sync.again = true;
+    return;
+  }
+  sync.busy = true;
+  renderBlacklistSync();
+  setBlacklistSyncStatus(manual ? "Syncing with e621…" : "Checking your e621 blacklist…");
+  try {
+    let record = user;
+    if (!record || typeof record.blacklisted_tags !== "string") {
+      const id = state.authUser && state.authUser.id;
+      record = await fetchUser(id || basicAuthUsername());
+      if (record && record.id) state.authUser = { ...(state.authUser || {}), ...record };
+    }
+    if (!record || typeof record.blacklisted_tags !== "string") {
+      const error = new Error("e621 did not include your account blacklist in the response, so it can't be synced.");
+      error.code = "no-blacklist";
+      throw error;
+    }
+    const userId = Number(record.id || (state.authUser && state.authUser.id));
+    const remote = parseBlacklistText(record.blacklisted_tags);
+    const base = loadSyncBase(userId);
+    const merged = mergeBlacklists({ base, local: state.blacklist, remote });
+    const localChanged = !sameBlacklist(merged, state.blacklist);
+    const remoteChanged = !sameBlacklist(merged, remote);
+    if (localChanged) {
+      state.blacklist = merged;
+      persistBlacklist();
+      renderBlacklist();
+      state.avatarCache.clear();
+    }
+    if (remoteChanged) {
+      setBlacklistSyncStatus("Saving to your e621 account…");
+      await updateAccountBlacklist(userId, serializeBlacklist(merged));
+    }
+    saveSyncBase(userId, merged);
+    sync.lastOk = Date.now();
+    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const parts = [];
+    if (localChanged) parts.push("updated from your account");
+    if (remoteChanged) parts.push("saved to your account");
+    setBlacklistSyncStatus(
+      "Synced with e621 at " + time + " (" + merged.length + (merged.length === 1 ? " line" : " lines") + (parts.length ? ", " + parts.join(" and ") : "") + ").",
+      "ok"
+    );
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    const message = (error && error.message) || "Sync failed.";
+    setBlacklistSyncStatus("Blacklist sync failed: " + message + " Your list is still saved on this device.", "error");
+  } finally {
+    sync.busy = false;
+    renderBlacklistSync();
+    if (sync.again) {
+      sync.again = false;
+      syncBlacklist();
+    }
+  }
+}
+
+/* ---------- Download and fullscreen ---------- */
+
+function triggerDownload(href, name) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = name;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+/**
+ * Saves the original file with a readable name. e621's file server only
+ * allows cross-site reads from e621.net, so when the blob fetch is blocked
+ * the file opens in a new tab instead (save it from there).
+ */
+async function downloadCurrentPost() {
+  const post = currentViewerPost();
+  if (!post || state.downloadBusy) return;
+  const url = originalUrl(post) || sampleImageUrl(post);
+  if (!url) {
+    setActionStatus("This post has no file to download.", "error");
+    return;
+  }
+  const name = downloadFilename(post);
+  state.downloadBusy = true;
+  els.viewerDownload.disabled = true;
+  setActionStatus("Downloading " + name + "…");
+  try {
+    const response = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const blob = await response.blob();
+    const href = URL.createObjectURL(blob);
+    triggerDownload(href, name);
+    window.setTimeout(() => URL.revokeObjectURL(href), 60000);
+    els.viewerDownload.dataset.lastName = name;
+    els.viewerDownload.dataset.lastVia = "blob";
+    setActionStatus("Saved " + name + ".", "ok");
+  } catch (error) {
+    els.viewerDownload.dataset.lastName = name;
+    els.viewerDownload.dataset.lastVia = "open";
+    // Without "noopener" in the features so the return value says whether a
+    // pop-up blocker stopped it; the opener link is cut right after.
+    const opened = window.open(url, "_blank");
+    if (opened) {
+      try {
+        opened.opener = null;
+      } catch {
+        /* cross-origin */
+      }
+    }
+    setActionStatus(
+      "e621 doesn't allow direct downloads from other sites, so the original " +
+        (opened === null ? "can be opened with the link below" : "opened in a new tab") +
+        ". Save it from there as: " +
+        name,
+      "warn"
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "download-fallback";
+    link.textContent = " Open the file";
+    if (els.viewerActionStatus) els.viewerActionStatus.append(link);
+  } finally {
+    state.downloadBusy = false;
+    els.viewerDownload.disabled = false;
+  }
+}
+
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function toggleViewerFullscreen() {
+  if (fullscreenElement()) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+    return;
+  }
+  const stage = els.viewerStage;
+  const video = stage && stage.querySelector("video");
+  const request = stage && (stage.requestFullscreen || stage.webkitRequestFullscreen);
+  const iosVideo = () => {
+    if (video && typeof video.webkitEnterFullscreen === "function") {
+      video.webkitEnterFullscreen();
+      return true;
+    }
+    return false;
+  };
+  if (request) {
+    try {
+      const result = request.call(stage);
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {
+          if (!iosVideo()) setActionStatus("Fullscreen isn't available here.", "error");
+        });
+      }
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  // iPhone Safari only allows fullscreen on <video>.
+  if (!iosVideo()) setActionStatus("Fullscreen isn't available for images in this browser. Pinch to zoom instead.", "error");
+}
+
+function onFullscreenChange() {
+  const active = fullscreenElement() === els.viewerStage;
+  if (els.viewerStage) els.viewerStage.classList.toggle("is-fullscreen", active);
+  if (els.viewerFullscreen) {
+    els.viewerFullscreen.textContent = active ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
+    els.viewerFullscreen.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  // The media size changed: start unzoomed and realign the notes.
+  resetViewerZoom();
+  window.requestAnimationFrame(layoutNotesLayer);
+}
+
+/* ---------- Add comment ---------- */
+
+function resetCommentCompose() {
+  if (!els.commentForm) return;
+  els.commentForm.hidden = true;
+  if (els.commentAdd) {
+    els.commentAdd.hidden = false;
+    els.commentAdd.setAttribute("aria-expanded", "false");
+  }
+  if (els.commentText) els.commentText.value = "";
+  if (els.commentPreview) {
+    els.commentPreview.hidden = true;
+    els.commentPreview.textContent = "";
+  }
+  if (els.commentPreviewBtn) {
+    els.commentPreviewBtn.setAttribute("aria-pressed", "false");
+    els.commentPreviewBtn.textContent = "Preview";
+  }
+  setCommentStatus("");
+}
+
+function setCommentStatus(message, kind = "") {
+  if (!els.commentStatus) return;
+  els.commentStatus.textContent = message || "";
+  if (kind) els.commentStatus.dataset.kind = kind;
+  else delete els.commentStatus.dataset.kind;
+}
+
+function openCommentForm() {
+  if (!hasBasicAuth()) {
+    setCommentStatus("");
+    requireSignInForAction("comment");
+    return;
+  }
+  els.commentForm.hidden = false;
+  els.commentAdd.hidden = true;
+  els.commentAdd.setAttribute("aria-expanded", "true");
+  els.commentText.focus({ preventScroll: true });
+  els.commentForm.scrollIntoView({ block: "nearest" });
+}
+
+function toggleCommentPreview() {
+  const showing = !els.commentPreview.hidden;
+  if (showing) {
+    els.commentPreview.hidden = true;
+    els.commentPreviewBtn.setAttribute("aria-pressed", "false");
+    els.commentPreviewBtn.textContent = "Preview";
+    return;
+  }
+  const text = els.commentText.value.trim();
+  renderDTextInto(els.commentPreview, text || "(Nothing to preview yet.)");
+  els.commentPreview.hidden = false;
+  els.commentPreviewBtn.setAttribute("aria-pressed", "true");
+  els.commentPreviewBtn.textContent = "Edit";
+}
+
+async function submitComment(event) {
+  event.preventDefault();
+  const post = currentViewerPost();
+  if (!post || state.commentBusy) return;
+  if (!hasBasicAuth()) {
+    requireSignInForAction("comment");
+    return;
+  }
+  const body = els.commentText.value.trim();
+  if (!body) {
+    setCommentStatus("Write something first.", "error");
+    els.commentText.focus();
+    return;
+  }
+  state.commentBusy = true;
+  els.commentPost.disabled = true;
+  setCommentStatus("Posting…");
+  try {
+    const result = await postComment(post.id, body);
+    const created = (result && (result.comment || result)) || {};
+    const comment = {
+      id: created.id,
+      body: created.body || body,
+      created_at: created.created_at || new Date().toISOString(),
+      creator_id: created.creator_id || (state.authUser && state.authUser.id),
+      creator_name: created.creator_name || basicAuthUsername(),
+      score: created.score || 0,
+    };
+    if (currentViewerPost() !== post) return;
+    els.viewerCommentsList.append(renderComment(comment));
+    els.viewerCommentsStatus.textContent = "";
+    const stats = post.stats || (post.stats = {});
+    const count = (Number(postCommentCount(post)) || 0) + 1;
+    stats.comment_count = count;
+    els.viewerCommentsTitle.textContent = "Comments (" + count + ")";
+    resetCommentCompose();
+    setCommentStatus("Comment posted.", "ok");
+  } catch (error) {
+    if (error && error.code === "auth") {
+      requireSignInForAction("comment");
+    } else {
+      setCommentStatus("Could not post the comment: " + ((error && error.message) || "error"), "error");
+    }
+  } finally {
+    state.commentBusy = false;
+    els.commentPost.disabled = false;
+  }
+}
+
+function bindCommentCompose() {
+  if (!els.commentForm) return;
+  els.commentAdd.addEventListener("click", openCommentForm);
+  els.commentForm.addEventListener("submit", submitComment);
+  els.commentPreviewBtn.addEventListener("click", toggleCommentPreview);
+  els.commentCancel.addEventListener("click", () => {
+    resetCommentCompose();
+    els.commentAdd.focus({ preventScroll: true });
+  });
+  els.commentText.addEventListener("input", () => {
+    if (!els.commentPreview.hidden) renderDTextInto(els.commentPreview, els.commentText.value.trim() || "(Nothing to preview yet.)");
+  });
+}
+
 function bindEvents() {
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -3764,12 +4676,11 @@ function bindEvents() {
     window.setTimeout(hideSuggestions, 150);
   });
 
-  els.rating.addEventListener("change", () => {
-    if (els.app.hidden) return;
-    if (state.sub === "blacklist" || state.sub === "saved") return;
-    reloadCurrent({ page: 1, append: false });
-  });
+  for (const box of els.ratingBoxes) {
+    box.addEventListener("change", () => onRatingBoxChange(box));
+  }
   els.sort.addEventListener("change", () => {
+    saveDisplayPrefs();
     const tokens = tokenize(els.search.value).filter((item) => !/^[-]?order:/i.test(item));
     els.search.value = tokens.join(" ");
     if (els.app.hidden) return;
@@ -3834,7 +4745,11 @@ function bindEvents() {
   }
   if (els.authSave) els.authSave.addEventListener("click", signIn);
   if (els.authClear) els.authClear.addEventListener("click", signOut);
-  if (els.accountBtn) els.accountBtn.addEventListener("click", openAccountDialog);
+  if (els.accountBtn) els.accountBtn.addEventListener("click", onAccountButton);
+  bindAccountMenu();
+  bindDisplayMenu();
+  bindProfile();
+  if (els.blacklistSyncNow) els.blacklistSyncNow.addEventListener("click", () => syncBlacklist({ manual: true }));
   if (els.favOpenAccount) els.favOpenAccount.addEventListener("click", openAccountDialog);
   if (els.accountClose) els.accountClose.addEventListener("click", closeAccountDialog);
   if (els.accountDialog) {
@@ -3941,6 +4856,7 @@ function restorePrefs() {
   if (els.preferSample) els.preferSample.checked = sample !== "0";
   state.blacklist = normalizeBlacklist(parseStoredList(getItem(BLACKLIST_KEY) || "", true));
   state.commentsHidden = getItem(COMMENTS_HIDDEN_KEY) === "1";
+  restoreDisplayPrefs();
   state.saved = parseStoredList(getItem(SAVED_KEY) || "");
   const today = todayISO();
   state.popularDates = { day: today, week: today, month: today };

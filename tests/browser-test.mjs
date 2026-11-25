@@ -143,10 +143,23 @@ async function clickSelector(page, selector) {
   await page.evaluate((sel) => document.querySelector(sel).click(), selector);
 }
 
+/** Only Safe checked in the display menu's rating checkboxes. */
+async function useSafeRatings(page) {
+  await page.evaluate(() => {
+    for (const [id, on] of [["rating-s", true], ["rating-q", false], ["rating-e", false]]) {
+      const box = document.getElementById(id);
+      if (box.checked !== on) {
+        box.checked = on;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  });
+}
+
 async function confirmAndUseSafe(page) {
   await page.waitForSelector("#age-confirm");
   assert.equal(await page.$eval("#app", (el) => el.hidden), true);
-  await page.select("#rating", "s");
+  await useSafeRatings(page);
   await page.click("#age-confirm");
   await page.waitForSelector("#app:not([hidden])");
 }
@@ -252,7 +265,7 @@ try {
       assert.equal(before.declinedHeight, 0);
       assert.ok(before.scrollH <= before.innerH + 8, `startup page too tall: ${before.scrollH}`);
       assert.equal(before.visibleAccess, false);
-      await page.select("#rating", "s");
+      await useSafeRatings(page);
       await page.click("#age-confirm");
       await page.waitForSelector("#app:not([hidden])");
       const after = await page.evaluate(() => {
@@ -711,7 +724,7 @@ try {
     }));
     assert.match(srcs.css, /[?&]v=/);
     assert.match(srcs.js, /[?&]v=/);
-    assert.equal(await page.$eval("#rating", (el) => el.value), "all");
+    assert.deepEqual(await page.$$eval('#display-menu input[type="checkbox"][id^="rating-"]', (els) => els.map((el) => el.checked)), [true, true, true], "all ratings by default");
     await page.click("#age-confirm");
     await page.waitForSelector("#app:not([hidden])");
     await page.waitForFunction(() => /posts loaded|No posts found/i.test(document.getElementById("status")?.textContent || ""), { timeout: 20000 });
@@ -1771,7 +1784,7 @@ try {
       await page.setRequestInterception(true);
       page.on("request", (request) => {
         const url = request.url();
-        if (/^https:\/\/e621\.net\/users\/mock_user\.json/.test(url)) {
+        if (/^https:\/\/e621\.net\/users\/(mock_user|42)\.json/.test(url)) {
           if (request.method() === "OPTIONS") {
             request.respond({
               status: 204,
@@ -1861,8 +1874,8 @@ try {
       assert.match(still.pageStatus, /Signed in as mock_user/);
       assert.equal(still.favOpenHidden, true);
       await page.click("#account-btn");
-      await page.waitForSelector("#account-dialog[open]");
-      await clickSelector(page, "#auth-clear");
+      await page.waitForSelector("#account-menu:not([hidden])");
+      await page.click("#account-menu-logout");
       await page.waitForFunction(() => document.getElementById("auth-signed").hidden && document.getElementById("account-btn").textContent.trim() === "Sign in", { timeout: 5000 });
       assert.equal(await page.$eval("#auth-clear", (el) => el.disabled), true);
       log("PASS mocked sign-in shows Signed in as X, survives view changes with blocked storage, and signs out");
@@ -2035,8 +2048,8 @@ try {
       await clickSelector(page, "#viewer-close");
       await page.waitForFunction(() => !document.getElementById("viewer").open, { timeout: 5000 });
       await page.click("#account-btn");
-      await page.waitForSelector("#account-dialog[open]");
-      await clickSelector(page, "#auth-clear");
+      await page.waitForSelector("#account-menu:not([hidden])");
+      await page.click("#account-menu-logout");
       await page.waitForFunction(() => document.getElementById("account-btn").textContent.trim() === "Sign in", { timeout: 5000 });
       await clickSelector(page, "#account-close");
       page.authLog.length = 0;
