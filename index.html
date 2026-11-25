@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261125a" />
+    <link rel="stylesheet" href="css/styles.css?v=20261125b" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -45,7 +45,20 @@
               <button type="button" data-view="posts" aria-selected="true">Posts</button>
               <button type="button" data-view="pools" aria-selected="false">Pools</button>
             </nav>
-            <button type="button" id="account-btn" class="account-btn" aria-haspopup="dialog" aria-controls="account-dialog">Sign in</button>
+            <div class="account-wrap">
+              <button type="button" id="account-btn" class="account-btn" aria-haspopup="dialog" aria-controls="account-dialog">Sign in</button>
+              <div id="account-menu" class="account-menu" role="menu" aria-labelledby="account-btn" hidden>
+                <button type="button" role="menuitem" id="account-menu-profile" class="account-menu-item account-menu-profile">
+                  <span id="account-menu-avatar" class="account-avatar" aria-hidden="true"></span>
+                  <span class="account-menu-text">
+                    <span id="account-menu-name" class="account-menu-name"></span>
+                    <span class="account-menu-sub">View profile</span>
+                  </span>
+                </button>
+                <button type="button" role="menuitem" id="account-menu-favorites" class="account-menu-item account-menu-favorites">★ Favorites</button>
+                <button type="button" role="menuitem" id="account-menu-logout" class="account-menu-item account-menu-logout">Log out</button>
+              </div>
+            </div>
           </div>
           <form id="search-form" autocomplete="off">
             <div class="search-wrap">
@@ -65,8 +78,53 @@
               <ul id="suggest" role="listbox" hidden></ul>
             </div>
             <button type="button" id="search-help-btn" class="secondary search-help-btn" aria-haspopup="dialog" aria-controls="search-help" aria-label="Search help">?</button>
+            <button type="button" id="display-btn" class="secondary display-btn" aria-haspopup="true" aria-expanded="false" aria-controls="display-menu" aria-label="Display options">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+            </button>
             <button type="submit">Search</button>
           </form>
+          <div id="display-menu" class="display-menu" role="dialog" aria-label="Display options" hidden>
+            <fieldset class="seg-group">
+              <legend>Thumbnail size</legend>
+              <div class="seg">
+                <label><input type="radio" name="thumb-size" value="large" /><span>Large</span></label>
+                <label><input type="radio" name="thumb-size" value="normal" checked /><span>Normal</span></label>
+                <label><input type="radio" name="thumb-size" value="small" /><span>Small</span></label>
+              </div>
+            </fieldset>
+            <fieldset class="seg-group">
+              <legend>Thumbnail shape</legend>
+              <div class="seg">
+                <label><input type="radio" name="thumb-shape" value="full" /><span>Full</span></label>
+                <label><input type="radio" name="thumb-shape" value="cropped" checked /><span>Cropped</span></label>
+              </div>
+            </fieldset>
+            <label class="display-sort" id="sort-label">
+              Sort
+              <select id="sort">
+                <option value="" selected>Newest</option>
+                <option value="order:id">Oldest</option>
+                <option value="order:score">Highest score</option>
+                <option value="order:score_asc">Lowest score</option>
+                <option value="order:favcount">Most favorites</option>
+                <option value="order:favcount_asc">Least favorites</option>
+                <option value="order:comment_count">Most comments</option>
+                <option value="order:random">Random</option>
+              </select>
+            </label>
+            <fieldset class="rating-group">
+              <legend>Ratings</legend>
+              <label class="check"><input id="rating-s" type="checkbox" value="s" checked /> Safe</label>
+              <label class="check"><input id="rating-q" type="checkbox" value="q" checked /> Questionable</label>
+              <label class="check"><input id="rating-e" type="checkbox" value="e" checked /> Explicit</label>
+            </fieldset>
+            <label class="check">
+              <input id="prefer-sample" type="checkbox" checked />
+              Prefer sample in the viewer
+            </label>
+            <p id="display-note" class="muted tight" role="status"></p>
+            <button type="button" id="display-close" class="secondary">Done</button>
+          </div>
         </div>
 
         <nav id="sub-nav" class="sub-bar" role="tablist" aria-label="Posts tools">
@@ -84,35 +142,6 @@
       </div>
 
       <header class="top">
-        <div class="controls">
-          <label>
-            Rating
-            <select id="rating">
-              <option value="all" selected>All</option>
-              <option value="s">Safe</option>
-              <option value="q">Questionable</option>
-              <option value="e">Explicit</option>
-            </select>
-          </label>
-          <label>
-            Sort
-            <select id="sort">
-              <option value="" selected>Newest</option>
-              <option value="order:id">Oldest</option>
-              <option value="order:score">Highest score</option>
-              <option value="order:score_asc">Lowest score</option>
-              <option value="order:favcount">Most favorites</option>
-              <option value="order:favcount_asc">Least favorites</option>
-              <option value="order:comment_count">Most comments</option>
-              <option value="order:random">Random</option>
-            </select>
-          </label>
-          <label class="check">
-            <input id="prefer-sample" type="checkbox" checked />
-            Prefer sample
-          </label>
-        </div>
-
         <form id="favorites-panel" class="view-panel" hidden>
           <label for="fav-user">e621 username</label>
           <div class="inline-row">
@@ -160,9 +189,9 @@
         </div>
 
         <div id="blacklist-panel" class="view-panel" hidden>
-          <p class="muted tight">Posts with these tags are hidden from your results. Long-press any tag to add or remove it here too.</p>
+          <p class="muted tight">Posts with these tags are hidden from your results. Each line is one rule, like on e621: <code>canine rating:e</code> hides only posts with both. Long-press any tag to add or remove it here too.</p>
           <form id="blacklist-form" class="inline-row">
-            <label class="grow" for="blacklist-add">Add a tag to your blacklist
+            <label class="grow" for="blacklist-add">Add a tag (or a line of tags) to your blacklist
               <input id="blacklist-add" type="text" spellcheck="false" placeholder="tag_name" />
             </label>
             <button type="submit">Add</button>
@@ -170,6 +199,10 @@
           <ul id="blacklist-list" class="chip-list"></ul>
           <p id="blacklist-empty" class="muted tight">No extra tags on your blacklist.</p>
           <p id="blacklist-storage-note" class="muted tight" hidden>Storage is blocked, so this list lasts only until this tab closes.</p>
+          <div id="blacklist-sync" class="blacklist-sync">
+            <p id="blacklist-sync-status" class="muted tight" role="status">Sign in to sync this list with your e621 account blacklist.</p>
+            <button type="button" id="blacklist-sync-now" class="secondary" hidden>Sync now</button>
+          </div>
         </div>
 
         <div id="saved-panel" class="view-panel" hidden>
@@ -241,6 +274,10 @@
           <button type="button" id="viewer-down" class="secondary action-down" aria-pressed="false" aria-label="Downvote">⬇ Down</button>
           <button type="button" id="viewer-notes-toggle" class="secondary action-notes" aria-pressed="true" hidden>Notes</button>
         </div>
+        <div id="viewer-tools" class="viewer-tools">
+          <button type="button" id="viewer-download" class="secondary tool-download">⤓ Download</button>
+          <button type="button" id="viewer-fullscreen" class="secondary tool-fullscreen">⛶ Fullscreen</button>
+        </div>
         <p id="viewer-action-status" class="viewer-action-status" role="status" aria-live="polite" hidden></p>
       </div>
       <div id="viewer-alts" class="viewer-alts"></div>
@@ -253,7 +290,21 @@
         <div id="viewer-comments-body">
         <div id="viewer-comments-list" class="comment-list"></div>
         <p id="viewer-comments-status" class="muted tight"></p>
-        <button type="button" id="viewer-comments-more" class="secondary" hidden>Load older comments</button>
+        <button type="button" id="viewer-comments-more" class="secondary" hidden>Load newer comments</button>
+        <div id="comment-compose" class="comment-compose">
+          <button type="button" id="comment-add" class="secondary comment-add" aria-expanded="false" aria-controls="comment-form">Add comment</button>
+          <form id="comment-form" class="comment-form" hidden>
+            <label class="sr-only" for="comment-text">Your comment</label>
+            <textarea id="comment-text" rows="4" maxlength="10000" spellcheck="true" placeholder="Write a comment. DText like [b]bold[/b] and [[wiki links]] works."></textarea>
+            <div class="comment-form-actions">
+              <button type="submit" id="comment-post">Post</button>
+              <button type="button" id="comment-preview-btn" class="secondary" aria-pressed="false">Preview</button>
+              <button type="button" id="comment-cancel" class="secondary">Cancel</button>
+            </div>
+            <div id="comment-preview" class="comment-preview comment-body dtext" aria-label="Preview" hidden></div>
+            <p id="comment-status" class="comment-status muted tight" role="status" aria-live="polite"></p>
+          </form>
+        </div>
         </div>
       </section>
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
@@ -277,7 +328,7 @@
           Remember my account
         </label>
         <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
-        <p class="muted tight">Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled. Signing in sends your key with every request. This site does not use e621's guest blacklist, and it will not import your e621 account blacklist. Use this site's Blacklist to hide tags.</p>
+        <p class="muted tight">Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled. Signing in sends your key with every request. While you are signed in, this site's Blacklist syncs both ways with your e621 account blacklist.</p>
         <div class="inline-row">
           <button id="auth-save" type="button">Sign in</button>
           <button id="auth-clear" type="button" class="secondary" disabled>Sign out</button>
@@ -287,7 +338,7 @@
       </div>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261125a"></script>
+    <script type="module" src="js/app.js?v=20261125b"></script>
     <dialog id="wiki-dialog" class="wiki-dialog" aria-labelledby="wiki-title">
       <div class="wiki-chrome">
         <button type="button" id="wiki-close">Close</button>
@@ -303,6 +354,35 @@
           <h3 class="viewer-section-title">Tags in this page</h3>
           <div id="wiki-mentions-list" class="tag-chip-list"></div>
         </section>
+      </div>
+    </dialog>
+
+    <dialog id="profile-dialog" class="wiki-dialog profile-dialog" aria-labelledby="profile-name">
+      <div class="wiki-chrome">
+        <button type="button" id="profile-close">Close</button>
+        <a id="profile-open" href="#" target="_blank" rel="noopener noreferrer">Open on e621</a>
+      </div>
+      <div class="wiki-content profile-content">
+        <div class="profile-head">
+          <span id="profile-avatar" class="account-avatar profile-avatar" aria-hidden="true"></span>
+          <div class="profile-id">
+            <h2 id="profile-name" class="profile-name"></h2>
+            <p id="profile-level" class="profile-level"></p>
+            <p id="profile-joined" class="muted tight"></p>
+          </div>
+        </div>
+        <p id="profile-status" class="muted tight" role="status"></p>
+        <dl id="profile-stats" class="profile-stats"></dl>
+        <div id="profile-sections" class="profile-sections"></div>
+        <section id="profile-about-wrap" class="profile-about" hidden>
+          <h3 class="viewer-section-title">About</h3>
+          <div id="profile-about" class="dtext"></div>
+        </section>
+        <section id="profile-artinfo-wrap" class="profile-about" hidden>
+          <h3 class="viewer-section-title">Art info</h3>
+          <div id="profile-artinfo" class="dtext"></div>
+        </section>
+        <button type="button" id="profile-settings" class="secondary">Account settings</button>
       </div>
     </dialog>
 

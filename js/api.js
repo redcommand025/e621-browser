@@ -123,6 +123,17 @@ export function describeApiFailure(status, contentType, bodyText) {
         }
         return msg.trim();
       }
+      // Validation errors: {"errors": {"body": ["is too short"]}} or ["…"].
+      const errors = body && body.errors;
+      const parts = [];
+      if (Array.isArray(errors)) parts.push(...errors.map(String));
+      else if (errors && typeof errors === "object") {
+        for (const [field, list] of Object.entries(errors)) {
+          for (const item of [].concat(list)) parts.push((field === "base" ? "" : field.replace(/_/g, " ") + " ") + String(item));
+        }
+      }
+      const text = parts.map((p) => p.trim()).filter((p) => p && !/[<>]/.test(p)).join("; ");
+      if (text) return text.charAt(0).toUpperCase() + text.slice(1) + ".";
     } catch (error) {
       /* ignore invalid JSON */
     }
@@ -424,7 +435,8 @@ export function sendJson(method, path, body = {}, { signal } = {}) {
     const headers = requestHeaders();
     const form = new URLSearchParams();
     for (const [key, value] of Object.entries(body || {})) {
-      if (value == null || value === "") continue;
+      // Empty strings are sent (an empty blacklist is a real value).
+      if (value == null) continue;
       form.set(key, String(value));
     }
     const init = { method, headers, signal, mode: "cors" };
@@ -459,12 +471,14 @@ export async function votePost(postId, params) {
   return sendJson("POST", "/posts/" + Number(postId) + "/votes.json", params);
 }
 
+/** Comments oldest first; page 2 holds the next (newer) ones. */
 export async function fetchComments(postId, { page = 1, limit = COMMENT_PAGE_LIMIT, signal } = {}) {
   const data = await fetchJson(
     "/comments.json",
     {
       group_by: "comment",
       "search[post_id]": String(Number(postId)),
+      "search[order]": "id_asc",
       limit: String(limit),
       page: String(page),
     },
@@ -538,4 +552,27 @@ export async function fetchTagImplications(name, { signal } = {}) {
     { signal }
   );
   return Array.isArray(data) ? data : [];
+}
+
+/* ---------- Account ---------- */
+
+/** /users/{name or id}.json. Signed in as that user, e621 also returns private fields such as blacklisted_tags. */
+export async function fetchUser(nameOrId, { signal } = {}) {
+  const key = String(nameOrId ?? "").trim();
+  if (!key) throw new Error("No user given.");
+  return fetchJson("/users/" + encodeURIComponent(key) + ".json", {}, { signal });
+}
+
+/** Replace the signed-in account's blacklist (newline-separated lines). */
+export async function updateAccountBlacklist(userId, text) {
+  const id = Number(userId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("Unknown account id.");
+  return sendJson("PATCH", "/users/" + id + ".json", { "user[blacklisted_tags]": String(text ?? "") });
+}
+
+export async function postComment(postId, body) {
+  return sendJson("POST", "/comments.json", {
+    "comment[post_id]": Number(postId),
+    "comment[body]": String(body ?? ""),
+  });
 }

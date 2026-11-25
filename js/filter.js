@@ -5,6 +5,9 @@
  * blacklist (as -tag), and the Rating and Sort selects when the query does not
  * already set rating: or order: itself.
  */
+import { normalizeRatings, ratingQueryToken } from "./account.js";
+import { blacklistLineMatches, blacklistLineTags, normalizeBlacklistLines, singleTagLines } from "./blacklist.js";
+
 export const MAX_SEARCH_TAGS = 40;
 
 export function normalizeTag(value) {
@@ -102,8 +105,10 @@ function isGroupToken(token) {
  * - The user's tokens are kept exactly as typed (only exact duplicates of
  *   plain tags are dropped; group parentheses are never touched).
  * - limit: is dropped because the app controls the page size.
- * - Blacklist tags become -tag unless the search already names that tag.
- * - The Rating select adds rating:X only if the query has no rating: token,
+ * - Single-tag blacklist lines become -tag unless the search already names
+ *   that tag. Multi-tag lines are only checked in the browser.
+ * - The rating checkboxes add rating:x (one) or -rating:x (two) only if the
+ *   query has no rating: token of its own,
  *   and the Sort select adds order:X only if the query has no order:/randseed:.
  * - If the query would exceed e621's 40-tag limit, user tags are trimmed last-first.
  */
@@ -132,7 +137,7 @@ export function buildSearchQuery({
   }
 
   const extras = [];
-  for (const raw of blacklist || []) {
+  for (const raw of singleTagLines(blacklist || [])) {
     const name = tagName(raw);
     if (!name || mentioned.has(name)) continue;
     const token = `-${name}`;
@@ -142,8 +147,9 @@ export function buildSearchQuery({
   }
 
   const ratingInQuery = queryHasMetatag(userQuery, "rating");
-  const ratingApplied = Boolean(rating && rating !== "all" && !ratingInQuery);
-  if (ratingApplied) extras.push(`rating:${rating}`);
+  const ratingToken = ratingQueryToken(rating);
+  const ratingApplied = Boolean(ratingToken && !ratingInQuery);
+  if (ratingApplied) extras.push(ratingToken);
 
   const orderInQuery = queryHasMetatag(userQuery, ORDER_METATAGS);
   if (order && !orderInQuery) {
@@ -208,16 +214,30 @@ export function shouldFetchMorePools(rawCount, limit, visibleCount, extraFetches
   );
 }
 
+/**
+ * Client-side filters: the allowed ratings ("all", "s", or a list like
+ * ["s","q"]) and the blacklist (e621-style lines, see blacklist.js).
+ */
 export function applyClientFilters(posts, { rating = "all", blacklist = [] } = {}) {
   let out = filterPosts(posts);
-  if (rating && rating !== "all") {
-    out = out.filter((post) => post && post.rating === rating);
+  const allowed = normalizeRatings(rating);
+  if (allowed.length < 3) {
+    out = out.filter((post) => post && allowed.includes(String(post.rating || "").charAt(0)));
   }
-  const extra = new Set((blacklist || []).map(tagName).filter(Boolean));
-  if (extra.size) {
-    out = out.filter((post) => !collectTags(post).some((tag) => extra.has(tag)));
+  const lines = normalizeBlacklistLines(blacklist);
+  if (lines.length) {
+    out = out.filter((post) => {
+      const tags = new Set(collectTags(post));
+      return !lines.some((line) => blacklistLineMatches(line, tags, post.rating));
+    });
   }
   return out;
+}
+
+/** Blacklist lines that don't name any tag the search asks for. */
+export function blacklistForQuery(blacklist, query) {
+  const named = new Set(tokenize(query).filter((t) => !tokenMetatag(t) && !/^-/.test(t)).map((t) => tagName(t)));
+  return normalizeBlacklistLines(blacklist).filter((line) => !blacklistLineTags(line).some((tag) => named.has(tag)));
 }
 
 export function sanitizeUsername(value) {
