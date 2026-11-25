@@ -23,13 +23,14 @@ import {
   tagName,
   tokenMetatag,
   tokenize,
-} from "./filter.js?v=20261125b";
+  fitTagLimit,
+} from "./filter.js?v=20261125c";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261125b";
+} from "./storage.js?v=20261125c";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -64,16 +65,16 @@ import {
   verifyBasicAuth,
   videoSources,
   votePost,
-} from "./api.js?v=20261125b";
-import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125b";
+} from "./api.js?v=20261125c";
+import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125c";
 import {
   METATAGS,
   SEARCH_SYNTAX_HELP,
   metatagSuggestions,
   singleSearchTag,
   splitTermPrefix,
-} from "./search.js?v=20261125b";
-import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125b";
+} from "./search.js?v=20261125c";
+import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125c";
 import {
   RATINGS,
   RATING_NAMES,
@@ -81,7 +82,7 @@ import {
   normalizeRatings,
   profileSearches,
   profileStats,
-} from "./account.js?v=20261125b";
+} from "./account.js?v=20261125c";
 import {
   mergeBlacklists,
   normalizeBlacklistLine,
@@ -90,7 +91,7 @@ import {
   sameBlacklist,
   serializeBlacklist,
   singleTagLines,
-} from "./blacklist.js?v=20261125b";
+} from "./blacklist.js?v=20261125c";
 import {
   activeNotes,
   aggregatePageTags,
@@ -108,7 +109,7 @@ import {
   tagNameBatches,
   tagRelations,
   voteRequestParams,
-} from "./postinfo.js?v=20261125b";
+} from "./postinfo.js?v=20261125c";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -128,6 +129,12 @@ const LONG_PRESS_MS = 500;
 const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
 const MAX_APPENDED_PAGES = 5;
+// Pool pages: when a 24-post chunk has fewer than POOL_FILL_MIN visible posts,
+// fetch up to POOL_FILL_MAX_REQUESTS more requests of POOL_FILL_CHUNKS chunks
+// (72 ids; e621 allows up to 100 ids in one id: search).
+const POOL_FILL_MIN = 12;
+const POOL_FILL_CHUNKS = 3;
+const POOL_FILL_MAX_REQUESTS = 2;
 const MAX_PAGE = 750;
 const POOL_FILL_MAX_EXTRA = 10;
 
@@ -340,6 +347,17 @@ const state = {
   profileSeq: 0,
   blacklistSync: { busy: false, again: false, timer: 0, lastOk: 0 },
   downloadBusy: false,
+  // Grid position memory: bumped whenever a new result list replaces the
+  // current one (new search, view change), but not by Prev/Next paging
+  // from inside the viewer.
+  resultsEpoch: 0,
+  viewerPaging: false,
+  gridMemory: null,
+  poolListMemory: null,
+  // Browser Back closes the viewer / leaves a pool first (same-URL history entries).
+  historyLayers: [],
+  ignorePops: 0,
+  pendingBack: 0,
   commentsObserver: null,
   tagCounts: new Map(),
   tagCategories: new Map(),
@@ -414,13 +432,19 @@ function clientFilter(posts, { query = null } = {}) {
   return applyClientFilters(posts, { rating, blacklist });
 }
 
+// Rating + blacklist exclusions sent beside an id:1,2,3 lookup. A long
+// (synced) blacklist used to push these lookups past e621's 40-tag limit,
+// which failed every pool page; one slot is now kept for the id: metatag.
 function exclusionTagString() {
-  return buildSearchQuery({
-    userQuery: "",
-    rating: selectedRatings(),
-    order: "",
-    blacklist: blacklistTags(),
-  }).tags;
+  return fitTagLimit(
+    buildSearchQuery({
+      userQuery: "",
+      rating: selectedRatings(),
+      order: "",
+      blacklist: blacklistTags(),
+    }).tags,
+    1
+  );
 }
 
 function todayISO() {
@@ -720,6 +744,7 @@ function renderGrid(reset) {
 }
 
 async function loadPage({ page, append }) {
+  if (!append) markNewResults();
   const built = currentQuery();
   if (!append) updateWikiPreview();
   if (state.searchAbort) state.searchAbort.abort();
@@ -1491,7 +1516,207 @@ function renderViewer() {
   }
 }
 
+/* ---------- Grid position memory ---------- */
+
+// A new result list (search, view change, pool) replaces the grid. Viewer
+// Prev/Next paging does not count: the grid keeps its scroll and the closed
+// viewer scrolls to the last-viewed thumb instead.
+function markNewResults() {
+  if (state.viewerPaging) return;
+  state.resultsEpoch += 1;
+  state.gridMemory = null;
+}
+
+function viewerPaging(load) {
+  state.viewerPaging = true;
+  let result;
+  try {
+    result = load();
+  } finally {
+    state.viewerPaging = false;
+  }
+  return Promise.resolve(result);
+}
+
+function scrollToY(y) {
+  try {
+    window.scrollTo({ top: y, left: 0, behavior: "instant" });
+  } catch (error) {
+    window.scrollTo(0, y);
+  }
+}
+
+function centerElement(el) {
+  const rect = el.getBoundingClientRect();
+  const top = window.scrollY + rect.top - (window.innerHeight - rect.height) / 2;
+  scrollToY(Math.max(0, Math.round(top)));
+}
+
+function flashElement(el, className) {
+  el.classList.remove(className);
+  void el.offsetWidth;
+  el.classList.add(className);
+  setTimeout(function () {
+    el.classList.remove(className);
+  }, 1600);
+}
+
+// Runs on the dialog's close event. The dialog hands focus back to the
+// thumb that opened it, and iOS Safari may restore its own scroll, so the
+// position is applied now, on the next frame, and once more shortly after.
+function restoreGridAfterViewer() {
+  const memory = state.gridMemory;
+  state.gridMemory = null;
+  if (!memory || memory.epoch !== state.resultsEpoch || els.grid.hidden) return;
+  const post = state.viewerPost;
+  const moved = !!(post && memory.postId != null && post.id !== memory.postId);
+  let thumb = null;
+  if (moved) {
+    const index = state.posts.findIndex(function (item) {
+      return item && item.id === post.id;
+    });
+    if (index >= 0) thumb = els.grid.querySelector('.thumb[data-index="' + index + '"]');
+  }
+  const apply = function () {
+    if (thumb && thumb.isConnected) centerElement(thumb);
+    else scrollToY(memory.scrollY);
+  };
+  apply();
+  if (thumb) {
+    try {
+      thumb.focus({ preventScroll: true });
+    } catch (error) {
+      /* ignore */
+    }
+    flashElement(thumb, "thumb-recent");
+  }
+  const target = window.scrollY;
+  requestAnimationFrame(apply);
+  setTimeout(function () {
+    // Re-apply only if something other than the user moved the page.
+    if (Math.abs(window.scrollY - target) > 1 && !state.userScrolledAfterClose) apply();
+  }, 120);
+  state.userScrolledAfterClose = false;
+  const onUser = function () {
+    state.userScrolledAfterClose = true;
+  };
+  window.addEventListener("touchmove", onUser, { once: true, passive: true });
+  window.addEventListener("wheel", onUser, { once: true, passive: true });
+  setTimeout(function () {
+    window.removeEventListener("touchmove", onUser);
+    window.removeEventListener("wheel", onUser);
+  }, 200);
+}
+
+// Back from a pool: show the kept pool list as it was, without refetching.
+function backToPoolList() {
+  const memory = state.poolListMemory;
+  state.poolListMemory = null;
+  if (!memory || state.view !== "pools" || !els.poolList || !els.poolList.childElementCount) {
+    state.activePool = null;
+    state.poolIds = [];
+    state.posts = [];
+    return loadPools({ page: 1 });
+  }
+  if (els.viewer.open) closeViewer();
+  abortSearch();
+  state.loading = false;
+  markNewResults();
+  state.activePool = null;
+  state.poolIds = [];
+  state.posts = [];
+  state.activeIndex = -1;
+  state.pools = memory.pools;
+  state.page = memory.page;
+  state.pageStart = memory.pageStart;
+  state.hasMore = memory.hasMore;
+  state.appended = memory.appended;
+  if (els.poolSearch) els.poolSearch.value = memory.search;
+  if (els.poolOrder && memory.order) els.poolOrder.value = memory.order;
+  els.grid.innerHTML = "";
+  els.grid.hidden = true;
+  els.poolList.hidden = false;
+  if (els.poolNav) els.poolNav.hidden = true;
+  setStatus(memory.status);
+  updatePager();
+  scrollToY(memory.scrollY);
+  requestAnimationFrame(function () {
+    scrollToY(memory.scrollY);
+  });
+  const item = els.poolList.querySelector('[data-pool-id="' + memory.poolId + '"]');
+  if (item) {
+    try {
+      item.focus({ preventScroll: true });
+    } catch (error) {
+      /* ignore */
+    }
+    flashElement(item, "thumb-recent");
+  }
+  return Promise.resolve();
+}
+
+/* ---------- Browser Back for the viewer and pools ----------
+   The app has no URLs per view. Opening the viewer or a pool adds a
+   same-URL history entry, so the phone/browser Back button closes the
+   viewer or returns to the pool list instead of leaving the site. Closing
+   them from the UI removes the entry again. */
+
+function pushHistoryLayer(name) {
+  if (!window.history || typeof history.pushState !== "function") return;
+  if (state.historyLayers.indexOf(name) >= 0) return;
+  try {
+    if (state.pendingBack > 0) {
+      // A layer was just closed and its entry is still current: reuse it.
+      state.pendingBack -= 1;
+      history.replaceState({ e621Layer: name }, "");
+    } else {
+      history.pushState({ e621Layer: name }, "");
+    }
+    state.historyLayers.push(name);
+  } catch (error) {
+    /* history unavailable (sandboxed frame); ignore */
+  }
+}
+
+function dropHistoryLayer(name) {
+  const index = state.historyLayers.lastIndexOf(name);
+  if (index < 0) return;
+  state.pendingBack += state.historyLayers.length - index;
+  state.historyLayers.length = index;
+  queueMicrotask(flushHistoryBack);
+}
+
+function flushHistoryBack() {
+  const count = state.pendingBack;
+  if (count <= 0) return;
+  state.pendingBack = 0;
+  state.ignorePops += 1;
+  history.go(-count);
+}
+
+function onHistoryPop() {
+  if (state.ignorePops > 0) {
+    state.ignorePops -= 1;
+    return;
+  }
+  const top = state.historyLayers.pop();
+  if (top === "viewer") {
+    if (els.viewer.open) closeViewer();
+  } else if (top === "pool") {
+    if (state.view === "pools" && state.activePool) backToPoolList();
+  }
+}
+
 function openViewer(index) {
+  if (!els.viewer.open) {
+    const post = state.posts[index];
+    state.gridMemory = {
+      scrollY: window.scrollY,
+      postId: post ? post.id : null,
+      epoch: state.resultsEpoch,
+    };
+    pushHistoryLayer("viewer");
+  }
   state.activeIndex = index;
   state.viewerSource = state.view === "pools" && state.activePool ? "pools" : "search";
   state.viewerPost = state.posts[index] || null;
@@ -1504,6 +1729,7 @@ function openViewer(index) {
 }
 
 function closeViewer() {
+  dropHistoryLayer("viewer");
   if (fullscreenElement()) {
     const exit = document.exitFullscreen || document.webkitExitFullscreen;
     if (exit) Promise.resolve(exit.call(document)).catch(() => {});
@@ -1541,7 +1767,7 @@ function stepViewer(delta) {
   if (delta > 0 && state.hasMore) {
     const from = state.posts.length;
     if (els.viewerNext) els.viewerNext.disabled = true;
-    return Promise.resolve(reloadCurrent({ page: state.page + 1, append: true })).then(function () {
+    return viewerPaging(() => reloadCurrent({ page: state.page + 1, append: true })).then(function () {
       if (state.posts.length > from) {
         state.activeIndex = from;
         state.viewerPost = state.posts[from];
@@ -1553,7 +1779,7 @@ function stepViewer(delta) {
   }
   if (delta < 0 && state.page > 1 && state.appended === 0) {
     if (els.viewerPrev) els.viewerPrev.disabled = true;
-    return Promise.resolve(reloadCurrent({ page: state.page - 1, append: false })).then(function () {
+    return viewerPaging(() => reloadCurrent({ page: state.page - 1, append: false })).then(function () {
       if (state.posts.length) {
         state.activeIndex = state.posts.length - 1;
         state.viewerPost = state.posts[state.activeIndex];
@@ -3040,20 +3266,58 @@ function bindViewerSwipe() {
   );
 }
 
+function infiniteScrollReady() {
+  if (state.loading || !state.hasMore || appendLimitReached()) return false;
+  if (els.viewer && els.viewer.open) return false;
+  if (poolCatalogView()) return !!(state.pools && state.pools.length);
+  // An open pool may have a first page with nothing visible yet.
+  if (state.view === "pools" && state.activePool) return true;
+  return state.posts.length > 0;
+}
+
+function sentinelInView() {
+  if (!els.sentinel || els.sentinel.hidden) return false;
+  const rect = els.sentinel.getBoundingClientRect();
+  if (!rect.width && !rect.height && !els.sentinel.offsetParent) return false;
+  return rect.top < window.innerHeight + 200 && rect.bottom > -200;
+}
+
+// IntersectionObserver only fires when the sentinel crosses into view. If a
+// load adds few or no visible posts, it never leaves the view and nothing
+// fired again, so loading stopped. Re-check after each load.
+function recheckInfiniteScroll() {
+  if (!state.infiniteScrollBound) return;
+  requestAnimationFrame(function () {
+    // Never retry in a loop after a failed load; the Retry button handles that.
+    if (els.status && els.status.dataset.kind === "error") return;
+    if (infiniteScrollReady() && sentinelInView()) reloadCurrent({ page: state.page + 1, append: true });
+  });
+}
+
 function bindInfiniteScroll() {
   if (!("IntersectionObserver" in window) || !els.sentinel) return;
+  state.infiniteScrollBound = true;
   const observer = new IntersectionObserver((entries) => {
     if (!entries.some((entry) => entry.isIntersecting)) return;
-    if (state.loading || !state.hasMore || appendLimitReached()) return;
-    if (poolCatalogView()) {
-      if (!(state.pools && state.pools.length)) return;
-      reloadCurrent({ page: state.page + 1, append: true });
-      return;
-    }
-    if (!state.posts.length) return;
+    if (!infiniteScrollReady()) return;
     reloadCurrent({ page: state.page + 1, append: true });
   });
   observer.observe(els.sentinel);
+  // Backup for missed observer callbacks (it fires only on a crossing, so
+  // one that came while another load was running was lost): check on scroll.
+  let queued = false;
+  window.addEventListener(
+    "scroll",
+    function () {
+      if (queued) return;
+      queued = true;
+      setTimeout(function () {
+        queued = false;
+        if (infiniteScrollReady() && sentinelInView()) reloadCurrent({ page: state.page + 1, append: true });
+      }, 150);
+    },
+    { passive: true }
+  );
 }
 
 
@@ -3074,7 +3338,9 @@ function pagerStartPage() {
 }
 
 function appendLimitReached() {
-  if (poolCatalogView()) return false;
+  // A pool is a finite list (and the pool catalog loads in its own pages),
+  // so pools keep loading until the end instead of stopping after 5 loads.
+  if (state.view === "pools") return false;
   return state.appended >= MAX_APPENDED_PAGES;
 }
 
@@ -3106,6 +3372,7 @@ function finishLoad() {
   state.loading = false;
   updatePager();
   if (els.viewer && els.viewer.open) updateViewerNav();
+  recheckInfiniteScroll();
 }
 
 function showPostGrid() {
@@ -3129,6 +3396,7 @@ function assignPosts(posts, { page, append, pageSize = PAGE_LIMIT }) {
 }
 
 function resetResults() {
+  markNewResults();
   state.posts = [];
   state.popularAll = [];
   state.page = 1;
@@ -3152,6 +3420,9 @@ function updateSortVisibility() {
 }
 
 function setView(view) {
+  markNewResults();
+  state.poolListMemory = null;
+  dropHistoryLayer("pool");
   state.view = view;
   if (view !== "posts") hideWikiPreview();
   if (view !== "pools") {
@@ -3573,6 +3844,7 @@ function signOut() {
 }
 
 async function loadFavorites({ page, append }) {
+  if (!append) markNewResults();
   if (els.favUser && !sanitizeUsername(els.favUser.value) && hasBasicAuth()) {
     els.favUser.value = basicAuthUsername();
   }
@@ -3678,6 +3950,10 @@ function renderPoolList(pools, append) {
 }
 
 async function loadPools({ page, append } = {}) {
+  if (!append) {
+    markNewResults();
+    state.poolListMemory = null;
+  }
   const abort = abortSearch();
   beginLoad(append ? "Loading more pools…" : "Loading pools…");
   try {
@@ -3736,16 +4012,38 @@ async function loadPools({ page, append } = {}) {
 }
 
 async function loadPoolPosts({ page, append }) {
+  if (!append) markNewResults();
   const ids = state.poolIds || [];
-  const start = (page - 1) * PAGE_LIMIT;
-  const slice = ids.slice(start, start + PAGE_LIMIT);
   const abort = abortSearch();
   beginLoad(append ? "Loading more pool posts…" : "Loading pool…");
   try {
     const extra = exclusionTagString();
-    const posts = clientFilter(await fetchPostsByIds(slice, { extraTags: extra, signal: abort.signal }));
-    state.hasMore = start + PAGE_LIMIT < ids.length;
-    state.page = page;
+    // Pool "pages" are 24-id chunks of the pool. With ratings or the
+    // blacklist on, a chunk can hold few or no visible posts, which left the
+    // grid too short to move the infinite-scroll sentinel and loading stalled.
+    // Keep pulling the next chunks (several per request) until enough show.
+    let chunk = page;
+    let posts = [];
+    let extraRequests = 0;
+    while (true) {
+      const count = extraRequests ? POOL_FILL_CHUNKS : 1;
+      const start = (chunk - 1) * PAGE_LIMIT;
+      const slice = ids.slice(start, start + PAGE_LIMIT * count);
+      if (!slice.length) break;
+      const found = clientFilter(await fetchPostsByIds(slice, { extraTags: extra, signal: abort.signal }));
+      posts = posts.concat(found);
+      chunk += Math.ceil(slice.length / PAGE_LIMIT) - 1;
+      const more = chunk * PAGE_LIMIT < ids.length;
+      if (!more || posts.length >= POOL_FILL_MIN || extraRequests >= POOL_FILL_MAX_REQUESTS) break;
+      extraRequests += 1;
+      chunk += 1;
+    }
+    if (append) {
+      const seen = new Set(state.posts.map((post) => post && post.id));
+      posts = posts.filter((post) => post && !seen.has(post.id));
+    }
+    state.hasMore = chunk * PAGE_LIMIT < ids.length;
+    state.page = chunk;
     if (append) {
       state.posts = state.posts.concat(posts);
       state.appended += 1;
@@ -3759,7 +4057,10 @@ async function loadPoolPosts({ page, append }) {
     const name = state.activePool ? String(state.activePool.name || "").replace(/_/g, " ") : "Pool";
     if (els.poolTitle) els.poolTitle.textContent = name;
     if (els.poolNav) els.poolNav.hidden = false;
-    if (!state.posts.length) setStatus(`No viewable posts in ${name}.`, "warn");
+    const scanned = Math.min(ids.length, state.page * PAGE_LIMIT);
+    if (!state.posts.length && !state.hasMore) setStatus(`No viewable posts in ${name}.`, "warn");
+    else if (!state.posts.length) setStatus(`No viewable posts in the first ${scanned} of ${ids.length} in ${name}. Load more to keep looking.`, "warn");
+    else if (state.hasMore) setStatus(`${state.posts.length} posts from ${name} (${scanned} of ${ids.length} checked).`);
     else setStatus(`${state.posts.length} posts from ${name}.`);
   } catch (error) {
     if (error && error.name === "AbortError") return;
@@ -3770,9 +4071,26 @@ async function loadPoolPosts({ page, append }) {
 }
 
 function openPool(pool) {
+  // Keep the pool list (DOM, pages, and scroll) for Back.
+  if (poolCatalogView() && els.poolList && els.poolList.childElementCount) {
+    state.poolListMemory = {
+      pools: state.pools,
+      page: state.page,
+      pageStart: state.pageStart,
+      hasMore: state.hasMore,
+      appended: state.appended,
+      scrollY: window.scrollY,
+      poolId: pool && pool.id,
+      status: els.status ? els.status.textContent : "",
+      search: (els.poolSearch && els.poolSearch.value) || "",
+      order: (els.poolOrder && els.poolOrder.value) || "",
+    };
+    pushHistoryLayer("pool");
+  }
   state.activePool = pool;
   state.poolIds = Array.isArray(pool.post_ids) ? pool.post_ids.slice() : [];
   if (els.poolList) els.poolList.hidden = true;
+  if (state.poolListMemory) scrollToY(0);
   loadPoolPosts({ page: 1, append: false });
 }
 
@@ -3794,6 +4112,7 @@ function popularPageSlice(page, append) {
 }
 
 async function loadPopular({ page = 1, append = false } = {}) {
+  if (!append) markNewResults();
   if (append && state.popularAll.length) {
     popularPageSlice(page, true);
     setStatus(`${state.posts.length} popular posts loaded.`);
@@ -4781,10 +5100,8 @@ function bindEvents() {
   }
   if (els.poolBack) {
     els.poolBack.addEventListener("click", () => {
-      state.activePool = null;
-      state.poolIds = [];
-      state.posts = [];
-      loadPools({ page: 1 });
+      dropHistoryLayer("pool");
+      backToPoolList();
     });
   }
 
@@ -4836,6 +5153,11 @@ function bindEvents() {
     els.preferSample.dispatchEvent(new Event("change"));
   });
   els.viewer.addEventListener("close", clearViewerMedia);
+  els.viewer.addEventListener("close", restoreGridAfterViewer);
+  els.viewer.addEventListener("close", function () {
+    dropHistoryLayer("viewer");
+  });
+  window.addEventListener("popstate", onHistoryPop);
   els.viewer.addEventListener("click", (event) => {
     if (event.target === els.viewer) closeViewer();
   });

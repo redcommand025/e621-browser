@@ -2363,3 +2363,32 @@ button.viewer-brand:focus-visible {
   width: auto;
   min-height: 34px;
 }
+
+/* Grid position memory: the last-viewed thumb / opened pool flashes when
+   the viewer closes or Back returns to the pool list. */
+.thumb.thumb-recent,
+.pool-item.thumb-recent {
+  outline: 2px solid var(--accent, #c41e3a);
+  outline-offset: 2px;
+  animation: thumb-recent-glow 1.5s ease-out;
+}
+
+@keyframes thumb-recent-glow {
+  0% { box-shadow: 0 0 0 4px rgba(196, 30, 58, 0.85), 0 0 18px rgba(196, 30, 58, 0.7); }
+  100% { box-shadow: 0 0 0 0 rgba(196, 30, 58, 0), 0 0 0 rgba(196, 30, 58, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thumb.thumb-recent,
+  .pool-item.thumb-recent { animation: none; }
+}
+
+/* Keep the page underneath still while the post viewer is open (phones
+   otherwise scroll the grid through the dialog). */
+html:has(#viewer[open]) {
+  overflow: hidden;
+}
+
+#viewer {
+  overscroll-behavior: contain;
+}

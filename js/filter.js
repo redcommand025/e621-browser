@@ -157,13 +157,15 @@ export function buildSearchQuery({
   }
 
   const groupTokens = userTokens.filter(isGroupToken).length;
+  // Drop blacklist extras first, then user tags, so the user's search wins.
+  // (This also runs for an empty search: a long synced blacklist alone used
+  // to exceed e621's limit and fail the request.)
+  while (extras.length && userTokens.length - groupTokens + extras.length > MAX_SEARCH_TAGS && extras[0].startsWith("-")) {
+    extras.shift();
+  }
   const allowedUser = Math.max(0, MAX_SEARCH_TAGS - extras.length);
   let keptUser = userTokens;
   if (userTokens.length - groupTokens > allowedUser) {
-    // Drop blacklist extras first, then user tags, so the user's search wins.
-    while (extras.length && userTokens.length - groupTokens + extras.length > MAX_SEARCH_TAGS && extras[0].startsWith("-")) {
-      extras.shift();
-    }
     const room = Math.max(0, MAX_SEARCH_TAGS - extras.length);
     if (userTokens.length - groupTokens > room) {
       keptUser = [];
@@ -471,4 +473,19 @@ export function postHasActiveChildren(post) {
   if (rel && rel.has_children != null) return Boolean(rel.has_children);
   if (has && has.children != null) return Boolean(has.children);
   return postChildIds(post).length > 0;
+}
+
+// Keep a tag string within e621's 40-tag limit while leaving `reserve` slots
+// for tags added beside it (such as one id:1,2,3 metatag). Blacklist
+// exclusions ("-tag") are dropped first, from the front; the rest (rating,
+// order) are kept. Blacklisted posts are still hidden client side.
+export function fitTagLimit(tags, reserve = 0, max = MAX_SEARCH_TAGS) {
+  const tokens = String(tags || "").split(/\s+/).filter(Boolean);
+  const room = Math.max(0, max - reserve);
+  while (tokens.length > room) {
+    const index = tokens.findIndex((token) => token.startsWith("-") && !token.includes(":"));
+    if (index < 0) break;
+    tokens.splice(index, 1);
+  }
+  return tokens.join(" ");
 }

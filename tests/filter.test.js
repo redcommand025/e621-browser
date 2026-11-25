@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyClientFilters, buildSearchQuery, queryHasMetatag, tagName, tokenMetatag, tokenize } from "../js/filter.js";
+import { applyClientFilters, buildSearchQuery, fitTagLimit, MAX_SEARCH_TAGS, queryHasMetatag, tagName, tokenMetatag, tokenize } from "../js/filter.js";
 import * as filter from "../js/filter.js";
 
 test("the old hard-blocked tag list is gone", () => {
@@ -74,4 +74,20 @@ test("client filter keeps rating and blacklist behavior", () => {
   ];
   assert.deepEqual(applyClientFilters(posts, { rating: "s" }).map((p) => p.id), [1]);
   assert.deepEqual(applyClientFilters(posts, { blacklist: ["gore"] }).map((p) => p.id), [1]);
+});
+
+test("buildSearchQuery keeps an empty search within 40 tags with a long blacklist", () => {
+  const blacklist = Array.from({ length: 45 }, (_, i) => `tag_${i}`);
+  const { tags } = buildSearchQuery({ userQuery: "", rating: "s", blacklist });
+  const tokens = tags.split(" ");
+  assert.ok(tokens.length <= MAX_SEARCH_TAGS, `got ${tokens.length} tags`);
+  assert.ok(tokens.includes("rating:s"), "rating stays");
+});
+
+test("fitTagLimit leaves room for an id: lookup and keeps rating tags", () => {
+  const tags = Array.from({ length: 41 }, (_, i) => `-tag_${i}`).concat("-rating:e").join(" ");
+  const fitted = fitTagLimit(tags, 1).split(" ");
+  assert.equal(fitted.length, MAX_SEARCH_TAGS - 1);
+  assert.ok(fitted.includes("-rating:e"));
+  assert.equal(fitTagLimit("-a rating:s", 1), "-a rating:s");
 });
