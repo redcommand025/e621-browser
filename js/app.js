@@ -22,19 +22,24 @@ import {
   sanitizeUsername,
   tagName,
   tokenize,
-} from "./filter.js?v=20261122i";
+} from "./filter.js?v=20261124a";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261122i";
+} from "./storage.js?v=20261124a";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
   basicAuthUsername,
   clearBasicAuth,
+  favoritePost,
   fetchAutocomplete,
+  fetchComments,
+  fetchNotes,
+  fetchTagsByNames,
+  COMMENT_PAGE_LIMIT,
   fetchPoolById,
   fetchPools,
   fetchPopular,
@@ -48,9 +53,29 @@ import {
   previewUrl,
   sampleImageUrl,
   setBasicAuth,
+  unfavoritePost,
   verifyBasicAuth,
   videoSources,
-} from "./api.js?v=20261122i";
+  votePost,
+} from "./api.js?v=20261124a";
+import { parseDText } from "./dtext.js?v=20261124a";
+import {
+  activeNotes,
+  aggregatePageTags,
+  applyFavoriteChange,
+  applyVoteResult,
+  formatPostDate,
+  mergeRelatedTags,
+  noteBoxPercent,
+  postDetails,
+  postFileInfo,
+  postHasNotes,
+  postIsFavorited,
+  postUserVote,
+  searchTagNames,
+  tagNameBatches,
+  voteRequestParams,
+} from "./postinfo.js?v=20261124a";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -145,6 +170,22 @@ const els = {
   poolList: document.getElementById("pool-list"),
   popularPanel: document.getElementById("popular-panel"),
   popularRange: document.getElementById("popular-range"),
+  viewerFav: document.getElementById("viewer-fav"),
+  viewerUp: document.getElementById("viewer-up"),
+  viewerDown: document.getElementById("viewer-down"),
+  viewerNotesToggle: document.getElementById("viewer-notes-toggle"),
+  viewerActionStatus: document.getElementById("viewer-action-status"),
+  viewerComments: document.getElementById("viewer-comments"),
+  viewerCommentsTitle: document.getElementById("viewer-comments-title"),
+  viewerCommentsList: document.getElementById("viewer-comments-list"),
+  viewerCommentsStatus: document.getElementById("viewer-comments-status"),
+  viewerCommentsMore: document.getElementById("viewer-comments-more"),
+  viewerDetailsList: document.getElementById("viewer-details-list"),
+  viewerDescription: document.getElementById("viewer-description"),
+  relatedBtn: document.getElementById("related-btn"),
+  relatedPanel: document.getElementById("related-panel"),
+  relatedNote: document.getElementById("related-note"),
+  relatedList: document.getElementById("related-list"),
 };
 
 const state = {
@@ -183,6 +224,15 @@ const state = {
   poolNavSeq: 0,
   familySeq: 0,
   familyCache: {},
+  actionBusy: false,
+  notesVisible: true,
+  notesCache: {},
+  noteSeq: 0,
+  comments: { postId: null, page: 0, loading: false, done: false, seq: 0 },
+  commentsObserver: null,
+  tagCounts: new Map(),
+  tagCountSeq: 0,
+  relatedSeq: 0,
 };
 
 function parseStoredList(raw, asTags = false) {
@@ -547,6 +597,7 @@ async function loadPage({ page, append }) {
 
 function searchFromStart() {
   hideSuggestions();
+  closeRelatedPanel();
   return loadPage({ page: 1, append: false });
 }
 
@@ -644,7 +695,14 @@ function renderImage(post, useSample) {
       showViewerError("The image could not be loaded.", []);
     }
   });
-  els.viewerStage.append(img);
+  // The wrapper (not the image) receives the zoom transform, so the notes
+  // layer inside it stays aligned with the picture while pinched or panned.
+  const wrap = document.createElement("div");
+  wrap.className = "media-wrap";
+  wrap.append(img);
+  img.addEventListener("load", layoutNotesLayer);
+  els.viewerStage.append(wrap);
+  loadViewerNotes(post);
 }
 
 function updateQualityButton(post) {
@@ -1036,11 +1094,17 @@ function renderViewerTags(post) {
       minus.addEventListener("click", function () {
         applyTagToSearch("exclude", name);
       });
-      row.append(plus, label, minus);
+      const count = document.createElement("span");
+      count.className = "tag-count";
+      count.dataset.tag = name;
+      const known = state.tagCounts.get(name);
+      if (known != null) count.textContent = formatCount(known);
+      row.append(plus, label, count, minus);
       wrap.append(row);
     }
     els.viewerTags.append(wrap);
   }
+  loadViewerTagCounts(post);
 }
 
 function applyTagToSearch(mode, raw) {
@@ -1251,7 +1315,13 @@ function renderViewer() {
   }
   updateViewerNav();
   updateQualityButton(post);
+  renderViewerActions(post);
+  setActionStatus("");
+  hideNotePopup();
+  updateNotesToggle(post, 0);
+  renderViewerComments(post);
   renderViewerTags(post);
+  renderViewerDetails(post);
   updateViewerContext(post);
   updatePoolNavButtons();
   updateViewerFamily(post);
@@ -1289,6 +1359,10 @@ function closeViewer() {
   try {
     if (els.viewerStage) clearViewerMedia();
     if (els.viewerTags) els.viewerTags.innerHTML = "";
+    resetViewerComments(null);
+    hideNotePopup();
+    state.noteSeq += 1;
+    state.tagCountSeq += 1;
     state.familySeq = (state.familySeq || 0) + 1;
     hideViewerFamily();
     if (!els.viewer) return;
@@ -1348,6 +1422,677 @@ function stepActiveViewer(delta) {
   return Promise.resolve();
 }
 
+/* ---------- DText rendering (safe: DOM nodes and textContent only) ---------- */
+
+const DTEXT_INLINE_ELEMENTS = {
+  b: "strong",
+  i: "em",
+  u: "u",
+  s: "s",
+  sup: "sup",
+  sub: "sub",
+  span: "span",
+  small: "small",
+};
+
+function appendDTextNodes(parent, nodes) {
+  for (const node of nodes || []) {
+    let el = null;
+    switch (node.type) {
+      case "text":
+        parent.append(document.createTextNode(node.text));
+        continue;
+      case "br":
+        parent.append(document.createElement("br"));
+        continue;
+      case "link":
+        el = document.createElement("a");
+        el.href = node.href;
+        el.target = "_blank";
+        el.rel = "noopener noreferrer nofollow";
+        break;
+      case "spoiler":
+        el = document.createElement("span");
+        el.className = "dtext-spoiler";
+        el.tabIndex = 0;
+        el.setAttribute("role", "button");
+        el.setAttribute("aria-label", "Spoiler, tap to reveal");
+        el.addEventListener("click", () => el.classList.toggle("revealed"));
+        break;
+      case "p":
+        el = document.createElement("p");
+        break;
+      case "heading":
+        el = document.createElement("p");
+        el.className = "dtext-heading";
+        break;
+      case "quote":
+        el = document.createElement("blockquote");
+        break;
+      case "code": {
+        const pre = document.createElement("pre");
+        pre.textContent = node.text;
+        parent.append(pre);
+        continue;
+      }
+      case "section": {
+        const details = document.createElement("details");
+        details.open = Boolean(node.expanded);
+        const summary = document.createElement("summary");
+        summary.textContent = node.title || "Show";
+        details.append(summary);
+        appendDTextNodes(details, node.children);
+        parent.append(details);
+        continue;
+      }
+      case "list": {
+        const ul = document.createElement("ul");
+        for (const item of node.items) {
+          const li = document.createElement("li");
+          if (item.level > 1) li.style.marginLeft = (item.level - 1) * 1 + "em";
+          appendDTextNodes(li, item.children);
+          ul.append(li);
+        }
+        parent.append(ul);
+        continue;
+      }
+      default:
+        el = document.createElement(DTEXT_INLINE_ELEMENTS[node.type] || "span");
+    }
+    if (node.children) appendDTextNodes(el, node.children);
+    parent.append(el);
+  }
+}
+
+function renderDTextInto(container, source) {
+  container.textContent = "";
+  container.classList.add("dtext");
+  appendDTextNodes(container, parseDText(source));
+}
+
+/* ---------- Favorite and vote buttons ---------- */
+
+function setActionStatus(message, kind = "") {
+  const node = els.viewerActionStatus;
+  if (!node) return;
+  node.textContent = message || "";
+  node.hidden = !message;
+  if (kind) node.dataset.kind = kind;
+  else delete node.dataset.kind;
+}
+
+function renderViewerActions(post) {
+  if (!els.viewerFav) return;
+  const signed = hasBasicAuth();
+  const faved = signed && postIsFavorited(post);
+  const vote = signed ? postUserVote(post) : 0;
+  const stats = post.stats || {};
+  const score = (stats.score && typeof stats.score === "object" ? stats.score : post.score) || {};
+  const up = Math.abs(Number(score.up) || 0);
+  const down = Math.abs(Number(score.down) || 0);
+  els.viewerFav.textContent = faved ? "★ Unfavorite" : "☆ Favorite";
+  els.viewerFav.setAttribute("aria-pressed", faved ? "true" : "false");
+  els.viewerFav.setAttribute("aria-label", faved ? "Remove from favorites" : "Add to favorites");
+  els.viewerUp.textContent = "⬆ " + formatCount(up);
+  els.viewerUp.setAttribute("aria-pressed", vote > 0 ? "true" : "false");
+  els.viewerUp.setAttribute("aria-label", "Upvote (" + up + " up)");
+  els.viewerDown.textContent = "⬇ " + formatCount(down);
+  els.viewerDown.setAttribute("aria-pressed", vote < 0 ? "true" : "false");
+  els.viewerDown.setAttribute("aria-label", "Downvote (" + down + " down)");
+  for (const button of [els.viewerFav, els.viewerUp, els.viewerDown]) {
+    button.disabled = Boolean(state.actionBusy);
+    button.dataset.signed = signed ? "true" : "false";
+  }
+  if (els.viewerStats) fillStatsLine(els.viewerStats, post);
+}
+
+function refreshPostEverywhere(post) {
+  renderViewerActions(post);
+  const index = state.posts.indexOf(post);
+  if (index >= 0) {
+    const bar = els.grid.querySelector('.thumb[data-index="' + index + '"] .thumb-stats');
+    if (bar) fillStatsLine(bar, post);
+  }
+}
+
+function requireSignInForAction(what) {
+  if (hasBasicAuth()) return true;
+  setActionStatus("Sign in with your e621 username and API key to " + what + ".", "error");
+  openAccountDialog();
+  return false;
+}
+
+async function runPostAction(label, task) {
+  const post = currentViewerPost();
+  if (!post || state.actionBusy) return;
+  state.actionBusy = true;
+  renderViewerActions(post);
+  setActionStatus(label + "…");
+  try {
+    const message = await task(post);
+    setActionStatus(message || "", "ok");
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    if (error && error.code === "auth") {
+      requireSignInForAction("do that");
+    } else if (error && (error.status === 401 || error.status === 403) && /rejected|denied|api access/i.test(error.message || "")) {
+      setActionStatus(error.message + " Check your account in Sign in.", "error");
+    } else {
+      setActionStatus((error && error.message) || "That did not work. Try again.", "error");
+    }
+  } finally {
+    state.actionBusy = false;
+    if (currentViewerPost() === post) renderViewerActions(post);
+  }
+}
+
+function toggleFavorite() {
+  if (!requireSignInForAction("favorite posts")) return;
+  runPostAction("Saving favorite", async (post) => {
+    if (postIsFavorited(post)) {
+      try {
+        await unfavoritePost(post.id);
+      } catch (error) {
+        // Not favorited on e621 any more: treat as done.
+        if (error.status !== 404 && error.status !== 422) throw error;
+      }
+      applyFavoriteChange(post, false);
+      refreshPostEverywhere(post);
+      return "Removed from favorites.";
+    }
+    let result = null;
+    try {
+      result = await favoritePost(post.id);
+    } catch (error) {
+      if (error.status === 422 && /already/i.test(error.message || "")) {
+        applyFavoriteChange(post, true, null);
+        refreshPostEverywhere(post);
+        return "Already in your favorites.";
+      }
+      throw error;
+    }
+    const returned = result && (result.post || result);
+    const count = returned && returned.fav_count != null ? returned.fav_count : null;
+    applyFavoriteChange(post, true, count);
+    refreshPostEverywhere(post);
+    return "Added to favorites.";
+  });
+}
+
+function castVote(direction) {
+  if (!requireSignInForAction("vote")) return;
+  runPostAction("Voting", async (post) => {
+    const params = voteRequestParams(postUserVote(post), direction);
+    const result = await votePost(post.id, params);
+    if (result && typeof result === "object") applyVoteResult(post, result);
+    refreshPostEverywhere(post);
+    const ours = postUserVote(post);
+    return ours > 0 ? "Upvoted." : ours < 0 ? "Downvoted." : "Vote removed.";
+  });
+}
+
+/* ---------- Notes overlay ---------- */
+
+function viewerNotesLayer() {
+  return els.viewerStage ? els.viewerStage.querySelector(".notes-layer") : null;
+}
+
+function hideNotePopup() {
+  const popup = document.getElementById("viewer-note-popup");
+  if (popup) popup.remove();
+  for (const box of els.viewerStage.querySelectorAll(".note-box.active")) box.classList.remove("active");
+}
+
+function showNotePopup(note, box) {
+  hideNotePopup();
+  box.classList.add("active");
+  const popup = document.createElement("div");
+  popup.id = "viewer-note-popup";
+  popup.className = "note-popup";
+  popup.setAttribute("role", "dialog");
+  popup.setAttribute("aria-label", "Note");
+  const body = document.createElement("div");
+  renderDTextInto(body, note.body || "");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "secondary note-popup-close";
+  close.textContent = "Close note";
+  close.addEventListener("click", hideNotePopup);
+  popup.append(body, close);
+  els.viewerStage.after(popup);
+}
+
+// Size the notes layer to the image's untransformed layout box inside the
+// zoom wrapper. Note boxes inside use percentages, so they scale with it.
+function layoutNotesLayer() {
+  const layer = viewerNotesLayer();
+  const img = els.viewerStage && els.viewerStage.querySelector(".media-wrap img");
+  if (!layer || !img) return;
+  layer.style.left = img.offsetLeft + "px";
+  layer.style.top = img.offsetTop + "px";
+  layer.style.width = img.offsetWidth + "px";
+  layer.style.height = img.offsetHeight + "px";
+}
+
+function updateNotesToggle(post, count) {
+  const toggle = els.viewerNotesToggle;
+  if (!toggle) return;
+  const show = Boolean(count) && !isVideoPost(post);
+  toggle.hidden = !show;
+  if (!show) return;
+  toggle.textContent = (state.notesVisible ? "Hide notes" : "Show notes") + " (" + count + ")";
+  toggle.setAttribute("aria-pressed", state.notesVisible ? "true" : "false");
+  const layer = viewerNotesLayer();
+  if (layer) layer.hidden = !state.notesVisible;
+}
+
+function renderNotesLayer(post, notes) {
+  const wrap = els.viewerStage.querySelector(".media-wrap");
+  if (!wrap) return;
+  const old = wrap.querySelector(".notes-layer");
+  if (old) old.remove();
+  const file = postFileInfo(post);
+  const layer = document.createElement("div");
+  layer.className = "notes-layer";
+  layer.hidden = !state.notesVisible;
+  let shown = 0;
+  for (const note of notes) {
+    const box = noteBoxPercent(note, file.width, file.height);
+    if (!box) continue;
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "note-box";
+    el.dataset.noteId = String(note.id);
+    el.style.left = box.left + "%";
+    el.style.top = box.top + "%";
+    el.style.width = box.width + "%";
+    el.style.height = box.height + "%";
+    el.setAttribute("aria-label", "Translation note " + (shown + 1));
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (el.classList.contains("active")) hideNotePopup();
+      else showNotePopup(note, el);
+    });
+    layer.append(el);
+    shown += 1;
+  }
+  wrap.append(layer);
+  layoutNotesLayer();
+  updateNotesToggle(post, shown);
+}
+
+function loadViewerNotes(post) {
+  hideNotePopup();
+  updateNotesToggle(post, 0);
+  if (!post || !postHasNotes(post) || isVideoPost(post)) return;
+  const seq = ++state.noteSeq;
+  const cached = state.notesCache[post.id];
+  const pending = cached ? Promise.resolve(cached) : fetchNotes(post.id);
+  pending
+    .then((list) => {
+      const notes = activeNotes(list);
+      state.notesCache[post.id] = notes;
+      if (seq !== state.noteSeq || currentViewerPost() !== post) return;
+      renderNotesLayer(post, notes);
+    })
+    .catch((error) => {
+      if (error && error.name === "AbortError") return;
+      if (seq !== state.noteSeq) return;
+      setActionStatus("Could not load notes: " + ((error && error.message) || "error"), "error");
+    });
+}
+
+function toggleNotes() {
+  state.notesVisible = !state.notesVisible;
+  if (!state.notesVisible) hideNotePopup();
+  const post = currentViewerPost();
+  const layer = viewerNotesLayer();
+  updateNotesToggle(post, layer ? layer.querySelectorAll(".note-box").length : 0);
+}
+
+/* ---------- Comments ---------- */
+
+function postCommentCount(post) {
+  const stats = post && post.stats;
+  const raw = stats && stats.comment_count != null ? stats.comment_count : post && post.comment_count;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resetViewerComments(post) {
+  const c = state.comments;
+  c.seq += 1;
+  c.postId = post ? post.id : null;
+  c.page = 0;
+  c.loading = false;
+  c.done = false;
+  if (state.commentsObserver) {
+    state.commentsObserver.disconnect();
+    state.commentsObserver = null;
+  }
+  if (els.viewerCommentsList) els.viewerCommentsList.textContent = "";
+  if (els.viewerCommentsMore) els.viewerCommentsMore.hidden = true;
+  if (els.viewerCommentsStatus) els.viewerCommentsStatus.textContent = "";
+}
+
+function renderComment(comment) {
+  const item = document.createElement("article");
+  item.className = "comment";
+  const head = document.createElement("header");
+  head.className = "comment-head";
+  const author = document.createElement("a");
+  author.className = "comment-author";
+  author.textContent = String(comment.creator_name || "user #" + comment.creator_id);
+  author.href = "https://e621.net/users/" + encodeURIComponent(String(Number(comment.creator_id) || ""));
+  author.target = "_blank";
+  author.rel = "noopener noreferrer";
+  const date = document.createElement("time");
+  date.className = "comment-date";
+  if (comment.created_at) date.dateTime = String(comment.created_at);
+  date.textContent = formatPostDate(comment.created_at);
+  const score = document.createElement("span");
+  const n = Number(comment.score) || 0;
+  score.className = "comment-score score-" + (n > 0 ? "up" : n < 0 ? "down" : "zero");
+  score.textContent = (n > 0 ? "⬆ " : n < 0 ? "⬇ " : "= ") + Math.abs(n);
+  score.setAttribute("aria-label", "Score " + n);
+  head.append(author, date, score);
+  const body = document.createElement("div");
+  body.className = "comment-body";
+  renderDTextInto(body, comment.body || "");
+  item.append(head, body);
+  return item;
+}
+
+function loadMoreComments() {
+  const c = state.comments;
+  const post = currentViewerPost();
+  if (!post || c.loading || c.done || c.postId !== post.id) return;
+  c.loading = true;
+  const seq = c.seq;
+  const page = c.page + 1;
+  if (els.viewerCommentsStatus) els.viewerCommentsStatus.textContent = "Loading comments…";
+  if (els.viewerCommentsMore) els.viewerCommentsMore.disabled = true;
+  fetchComments(post.id, { page })
+    .then((list) => {
+      if (seq !== c.seq) return;
+      c.page = page;
+      const visible = list.filter((comment) => comment && !comment.is_hidden);
+      for (const comment of visible) els.viewerCommentsList.append(renderComment(comment));
+      c.done = list.length < COMMENT_PAGE_LIMIT;
+      const total = els.viewerCommentsList.childElementCount;
+      els.viewerCommentsStatus.textContent = total ? "" : "No comments yet.";
+      els.viewerCommentsMore.hidden = c.done;
+    })
+    .catch((error) => {
+      if (seq !== c.seq || (error && error.name === "AbortError")) return;
+      els.viewerCommentsStatus.textContent = "Could not load comments: " + ((error && error.message) || "error");
+      els.viewerCommentsMore.hidden = false;
+    })
+    .finally(() => {
+      if (seq !== c.seq) return;
+      c.loading = false;
+      els.viewerCommentsMore.disabled = false;
+    });
+}
+
+function renderViewerComments(post) {
+  if (!els.viewerComments) return;
+  resetViewerComments(post);
+  const count = postCommentCount(post);
+  els.viewerCommentsTitle.textContent = count != null ? "Comments (" + count + ")" : "Comments";
+  if (count === 0) {
+    state.comments.done = true;
+    els.viewerCommentsStatus.textContent = "No comments yet.";
+    return;
+  }
+  els.viewerCommentsStatus.textContent = "Comments load when you scroll here.";
+  // Lazy: fetch only when the comments section scrolls into view.
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        if (state.commentsObserver === observer) state.commentsObserver = null;
+        loadMoreComments();
+      },
+      { root: els.viewer, rootMargin: "120px" }
+    );
+    state.commentsObserver = observer;
+    observer.observe(els.viewerComments);
+  } else {
+    loadMoreComments();
+  }
+}
+
+/* ---------- Details ---------- */
+
+function addDetail(list, label, value) {
+  if (value == null || value === "" || (Array.isArray(value) && !value.length)) return;
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  if (value instanceof Node) dd.append(value);
+  else dd.textContent = String(value);
+  list.append(dt, dd);
+}
+
+function detailLink(text, href) {
+  const a = document.createElement("a");
+  a.textContent = text;
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer nofollow";
+  return a;
+}
+
+function renderViewerDetails(post) {
+  const list = els.viewerDetailsList;
+  if (!list) return;
+  list.textContent = "";
+  const d = postDetails(post);
+  if (d.artists.length) {
+    const frag = document.createDocumentFragment();
+    d.artists.forEach((name, index) => {
+      if (index) frag.append(document.createTextNode(", "));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "detail-tag";
+      button.textContent = name;
+      button.addEventListener("click", () => applyTagToSearch("replace", name));
+      frag.append(button);
+    });
+    addDetail(list, d.artists.length > 1 ? "Artists" : "Artist", frag);
+  }
+  if (d.uploaderName || d.uploaderId != null) {
+    const label = d.uploaderName || "user #" + d.uploaderId;
+    addDetail(list, "Uploader", d.uploaderId != null ? detailLink(label, "https://e621.net/users/" + d.uploaderId) : label);
+  }
+  if (d.createdAt) {
+    const time = document.createElement("time");
+    time.dateTime = d.createdAt;
+    time.textContent = formatPostDate(d.createdAt);
+    addDetail(list, "Uploaded", time);
+  }
+  addDetail(list, "File type", d.ext ? d.ext.toUpperCase() : "");
+  if (d.width && d.height) addDetail(list, "Dimensions", d.width + " × " + d.height);
+  addDetail(list, "File size", d.sizeText);
+  if (d.duration) addDetail(list, "Duration", Math.round(d.duration) + " s");
+  if (d.sources.length) {
+    const ul = document.createElement("ul");
+    ul.className = "detail-sources";
+    for (const source of d.sources) {
+      const li = document.createElement("li");
+      if (source.href) li.append(detailLink(source.text, source.href));
+      else li.textContent = source.full;
+      if (source.removed) li.classList.add("removed");
+      ul.append(li);
+    }
+    addDetail(list, d.sources.length > 1 ? "Sources" : "Source", ul);
+  }
+  addDetail(list, "Rating", d.ratingName);
+  if (d.id != null) addDetail(list, "Post ID", detailLink(String(d.id), postPageUrl(post)));
+  if (d.md5) {
+    const code = document.createElement("code");
+    code.textContent = d.md5;
+    addDetail(list, "MD5", code);
+  }
+  if (els.viewerDescription) {
+    if (d.description.trim()) {
+      renderDTextInto(els.viewerDescription, d.description);
+      const title = document.createElement("p");
+      title.className = "detail-desc-title";
+      title.textContent = "Description";
+      els.viewerDescription.prepend(title);
+      els.viewerDescription.hidden = false;
+    } else {
+      els.viewerDescription.textContent = "";
+      els.viewerDescription.hidden = true;
+    }
+  }
+}
+
+/* ---------- Tag counts ---------- */
+
+async function fetchTagCounts(names) {
+  const missing = names.filter((name) => !state.tagCounts.has(name));
+  for (const batch of tagNameBatches(missing, 100)) {
+    const records = await fetchTagsByNames(batch);
+    for (const record of records) {
+      if (record && record.name) state.tagCounts.set(String(record.name).toLowerCase(), Number(record.post_count) || 0);
+    }
+    // Names e621 did not return have no posts (or were aliased away).
+    for (const name of batch) if (!state.tagCounts.has(name)) state.tagCounts.set(name, 0);
+  }
+}
+
+function fillTagCountNodes(root) {
+  if (!root) return;
+  for (const node of root.querySelectorAll(".tag-count[data-tag]")) {
+    const count = state.tagCounts.get(node.dataset.tag);
+    if (count == null) continue;
+    node.textContent = formatCount(count);
+    node.title = count + " posts";
+  }
+}
+
+function loadViewerTagCounts(post) {
+  if (!els.viewerTags) return;
+  const names = [...els.viewerTags.querySelectorAll(".tag-count[data-tag]")].map((node) => node.dataset.tag);
+  if (!names.length) return;
+  const seq = ++state.tagCountSeq;
+  fetchTagCounts(names)
+    .then(() => {
+      if (seq !== state.tagCountSeq || currentViewerPost() !== post) return;
+      fillTagCountNodes(els.viewerTags);
+    })
+    .catch(() => {
+      /* counts are optional */
+    });
+}
+
+/* ---------- Related tags ---------- */
+
+function closeRelatedPanel() {
+  if (!els.relatedPanel) return;
+  els.relatedPanel.hidden = true;
+  els.relatedBtn.setAttribute("aria-expanded", "false");
+  state.relatedSeq += 1;
+}
+
+function renderRelatedList(items, countKind) {
+  els.relatedList.textContent = "";
+  for (const item of items) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary related-tag";
+    button.dataset.tag = item.name;
+    const name = document.createElement("span");
+    name.className = "related-name";
+    name.textContent = item.name;
+    const count = document.createElement("span");
+    count.className = "tag-count";
+    count.dataset.tag = item.name;
+    if (countKind === "page") count.textContent = item.weight + "×";
+    button.append(name, count);
+    button.setAttribute("aria-label", "Add " + item.name + " to the search");
+    button.addEventListener("click", () => {
+      closeRelatedPanel();
+      applyTagToSearch("add", item.name);
+    });
+    li.append(button);
+    els.relatedList.append(li);
+  }
+}
+
+async function openRelatedPanel() {
+  if (!els.relatedPanel) return;
+  els.relatedPanel.hidden = false;
+  els.relatedBtn.setAttribute("aria-expanded", "true");
+  const seq = ++state.relatedSeq;
+  const query = els.search.value;
+  const searched = searchTagNames(query);
+  const exclude = [...tokenize(query).map((t) => tagName(t)), ...blacklistTags()];
+  els.relatedList.textContent = "";
+  els.relatedNote.textContent = "Loading related tags…";
+  let items = [];
+  let kind = "related";
+  try {
+    if (searched.length) {
+      const records = await fetchTagsByNames(searched.slice(0, 20));
+      if (seq !== state.relatedSeq) return;
+      for (const record of records) {
+        if (record && record.name) state.tagCounts.set(String(record.name).toLowerCase(), Number(record.post_count) || 0);
+      }
+      items = mergeRelatedTags(records, { exclude, limit: 30 });
+    }
+  } catch (error) {
+    if (seq !== state.relatedSeq) return;
+    items = [];
+  }
+  if (!items.length) {
+    kind = "page";
+    items = aggregatePageTags(clientFilter(state.posts), { exclude, limit: 30 });
+  }
+  if (seq !== state.relatedSeq) return;
+  if (!items.length) {
+    els.relatedNote.textContent = searched.length
+      ? "No related tags found for this search."
+      : "Search for a tag, or load some posts, to see related tags.";
+    return;
+  }
+  els.relatedNote.textContent =
+    kind === "related"
+      ? "Tags often used with " + searched.join(" + ") + ". Tap one to add it to the search."
+      : "Most common tags on the loaded posts. Tap one to add it to the search.";
+  renderRelatedList(items, kind);
+  if (kind === "related") {
+    try {
+      await fetchTagCounts(items.map((item) => item.name));
+      if (seq !== state.relatedSeq) return;
+      fillTagCountNodes(els.relatedList);
+    } catch (error) {
+      /* counts are optional */
+    }
+  }
+}
+
+function toggleRelatedPanel() {
+  if (!els.relatedPanel) return;
+  if (els.relatedPanel.hidden) openRelatedPanel();
+  else closeRelatedPanel();
+}
+
+function bindViewerExtras() {
+  if (els.viewerFav) els.viewerFav.addEventListener("click", toggleFavorite);
+  if (els.viewerUp) els.viewerUp.addEventListener("click", () => castVote(1));
+  if (els.viewerDown) els.viewerDown.addEventListener("click", () => castVote(-1));
+  if (els.viewerNotesToggle) els.viewerNotesToggle.addEventListener("click", toggleNotes);
+  if (els.viewerCommentsMore) els.viewerCommentsMore.addEventListener("click", loadMoreComments);
+  if (els.relatedBtn) els.relatedBtn.addEventListener("click", toggleRelatedPanel);
+  window.addEventListener("resize", layoutNotesLayer);
+}
+
 const VIEWER_MAX_ZOOM = 5;
 const VIEWER_DOUBLE_TAP_ZOOM = 2.5;
 const viewerZoom = {
@@ -1364,8 +2109,15 @@ function viewerMedia() {
   return els.viewerStage ? els.viewerStage.querySelector("img, video") : null;
 }
 
+// What the zoom transform is applied to: the image wrapper (which also holds
+// the notes layer) when there is one, otherwise the media element itself.
+function viewerZoomTarget() {
+  if (!els.viewerStage) return null;
+  return els.viewerStage.querySelector(".media-wrap") || viewerMedia();
+}
+
 function applyViewerZoom() {
-  const media = viewerMedia();
+  const media = viewerZoomTarget();
   if (!media) return;
   if (viewerZoom.scale <= 1) {
     media.style.transform = "";
@@ -1415,7 +2167,7 @@ function bindViewerZoom() {
   stage.addEventListener(
     "touchstart",
     (event) => {
-      const media = viewerMedia();
+      const media = viewerZoomTarget();
       if (!media) return;
       if (event.touches.length === 1) viewerZoom.usedMultiTouch = false;
       const rect = media.getBoundingClientRect();
@@ -1446,7 +2198,7 @@ function bindViewerZoom() {
   stage.addEventListener(
     "touchmove",
     (event) => {
-      const media = viewerMedia();
+      const media = viewerZoomTarget();
       if (!media) return;
       if (viewerZoom.pinch && event.touches.length >= 2) {
         const [a, b] = event.touches;
@@ -1474,7 +2226,7 @@ function bindViewerZoom() {
   stage.addEventListener(
     "touchend",
     (event) => {
-      const media = viewerMedia();
+      const media = viewerZoomTarget();
       if (event.touches.length < 2) viewerZoom.pinch = null;
       if (event.touches.length === 1 && viewerZoom.scale > 1) {
         const t = event.touches[0];
@@ -1483,7 +2235,9 @@ function bindViewerZoom() {
       if (event.touches.length === 0) viewerZoom.pan = null;
       if (viewerZoom.scale < 1.05 && viewerZoom.scale !== 1) resetViewerZoom();
       // Double-tap an image to zoom in, or back out when zoomed.
-      if (!media || media.tagName !== "IMG") return;
+      const shown = viewerMedia();
+      if (!media || !shown || shown.tagName !== "IMG") return;
+      if (event.target && event.target.closest && event.target.closest(".note-box")) return;
       if (event.touches.length || event.changedTouches.length !== 1 || viewerZoom.usedMultiTouch) return;
       const now = Date.now();
       const t = event.changedTouches[0];
@@ -1955,6 +2709,7 @@ function updateAuthStatus(message, kind) {
   if (els.authRememberNote) {
     els.authRememberNote.hidden = isStoragePersistent();
   }
+  if (els.viewer && els.viewer.open && state.viewerPost) renderViewerActions(state.viewerPost);
 }
 
 function openAccountDialog() {
@@ -2519,6 +3274,7 @@ function bindEvents() {
   });
   bindViewerSwipe();
   bindViewerZoom();
+  bindViewerExtras();
   bindInfiniteScroll();
 }
 
