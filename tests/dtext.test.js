@@ -76,3 +76,27 @@ test("windows line breaks and empty input are handled", () => {
   const blocks = parseDText("a\r\n\r\nb");
   assert.equal(blocks.length, 2);
 });
+
+import { dtextExcerpt, dtextWikiTitles } from "../js/dtext.js";
+
+test("wiki excerpt keeps the first paragraphs and marks truncation", () => {
+  const body = "First [b]para[/b].\n\nSecond para.\n\n[section=Hidden]x[/section]\n\nThird.\n\nFourth.";
+  const one = dtextExcerpt(body, { maxBlocks: 2 });
+  assert.equal(one.nodes.length, 2);
+  assert.equal(one.truncated, true);
+  assert.equal(dtextPlainText(one.nodes), "First para.\nSecond para.\n");
+  const short = dtextExcerpt("Only one.");
+  assert.equal(short.truncated, false);
+  const long = dtextExcerpt("word ".repeat(200), { maxChars: 40 });
+  assert.ok(dtextPlainText(long.nodes).length <= 42);
+  assert.ok(dtextPlainText(long.nodes).trim().endsWith("…"));
+  assert.equal(long.truncated, true);
+});
+
+test("wiki links carry their title; anchors stay text", () => {
+  const tree = parseDText("[[#Top|top]] see [[Red Panda|rp]], [[mammal]] and {{fox solo}} [[mammal]]");
+  assert.deepEqual(dtextWikiTitles(tree), ["red_panda", "mammal"]);
+  assert.equal(dtextPlainText(tree).startsWith("top see rp"), true);
+  const search = tree[0].children.find((n) => n.search);
+  assert.equal(search.search, "fox solo");
+});

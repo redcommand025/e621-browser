@@ -19,9 +19,7 @@ import {
   tagNameBatches,
   voteRequestParams,
 } from "../js/postinfo.js";
-import { BLOCKED_TAGS } from "../js/filter.js";
 
-const BLOCKED = BLOCKED_TAGS[0];
 
 const modern = {
   id: 10,
@@ -34,7 +32,7 @@ const modern = {
   files: { meta: { md5: "abc", ext: "png", size: 2048 }, original: { width: 600, height: 400 } },
   stats: { score: { up: 5, down: -1, total: 4 }, fav_count: 3, is_favorited: false, vote: 0 },
   has: { notes: true },
-  tags: { artist: ["some_artist", BLOCKED], general: ["solo"] },
+  tags: { artist: ["some_artist", "Second_Artist"], general: ["solo"] },
 };
 
 const classic = {
@@ -56,7 +54,7 @@ test("postDetails reads both post shapes", () => {
   assert.equal(d.sizeText, "2 KB");
   assert.equal(d.md5, "abc");
   assert.equal(d.uploaderName, "uploader_x");
-  assert.deepEqual(d.artists, ["some_artist"], "blocked tags never show as artists");
+  assert.deepEqual(d.artists, ["some_artist", "second_artist"]);
   assert.equal(d.ratingName, "Safe");
   const c = postDetails(classic);
   assert.equal(c.width, 100);
@@ -135,29 +133,29 @@ test("voting the same way again removes the vote", () => {
 });
 
 test("searchTagNames keeps plain positive tags only", () => {
-  assert.deepEqual(searchTagNames(`canine -cat rating:s order:score ~fox ${BLOCKED} solo* canine`), ["canine", "fox"]);
+  assert.deepEqual(searchTagNames("canine -cat rating:s order:score ~fox ( solo* canine"), ["canine", "fox"]);
 });
 
-test("related tags merge, rank shared tags first, and drop blocked ones", () => {
+test("related tags merge, rank shared tags first, and drop excluded ones", () => {
   assert.deepEqual(parseRelatedTagString("a 300 b 20"), [
     { name: "a", weight: 300 },
     { name: "b", weight: 20 },
   ]);
   const merged = mergeRelatedTags(
     [
-      { name: "canine", related_tags: `canine 300 mammal 250 fox 90 ${BLOCKED} 80 solo 50` },
+      { name: "canine", related_tags: `canine 300 mammal 250 fox 90 solo 50` },
       { name: "solo", related_tags: "solo 300 mammal 100 female 200" },
     ],
-    { exclude: ["canine", "solo"] }
+    { exclude: ["canine", "solo", "female"] }
   );
-  assert.deepEqual(merged.map((t) => t.name), ["mammal", "female", "fox"]);
+  assert.deepEqual(merged.map((t) => t.name), ["mammal", "fox"], "blacklisted/searched tags are dropped");
 });
 
 test("aggregatePageTags counts each post once per tag", () => {
   const out = aggregatePageTags(
     [
       { tags: { general: ["solo", "fur"], species: ["fox"] } },
-      { tags: { general: ["solo", "solo", BLOCKED] } },
+      { tags: { general: ["solo", "solo"] } },
     ],
     { exclude: ["fur"] }
   );
@@ -171,4 +169,24 @@ test("tagNameBatches dedupes and splits", () => {
   const names = Array.from({ length: 205 }, (_, i) => "t" + i);
   const batches = tagNameBatches([...names, "T0", "bad,name"], 100);
   assert.deepEqual(batches.map((b) => b.length), [100, 100, 5]);
+});
+
+import { tagRelations } from "../js/postinfo.js";
+
+test("tagRelations sorts aliases and implications for one tag", () => {
+  const rel = tagRelations(
+    "red_panda",
+    [
+      { antecedent_name: "lesser_panda", consequent_name: "red_panda", status: "active" },
+      { antecedent_name: "wah", consequent_name: "red_panda", status: "active" },
+      { antecedent_name: "old", consequent_name: "red_panda", status: "deleted" },
+    ],
+    [
+      { antecedent_name: "red_panda", consequent_name: "ailurid", status: "active" },
+      { antecedent_name: "red_panda_taur", consequent_name: "red_panda", status: "active" },
+    ]
+  );
+  assert.deepEqual(rel, { aliasOf: "", aliases: ["lesser_panda", "wah"], implies: ["ailurid"], impliedBy: ["red_panda_taur"] });
+  const alias = tagRelations("kitty", [{ antecedent_name: "kitty", consequent_name: "domestic_cat", status: "active" }], []);
+  assert.equal(alias.aliasOf, "domestic_cat");
 });

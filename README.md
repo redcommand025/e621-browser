@@ -9,12 +9,15 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - 18+ confirmation before any API request
 - Dark theme with a black canvas, red edge glow, and a deep crimson hexagon pattern
 - Posts (the default) loads recent posts and puts tag search with autocomplete in the top bar
+- Full e621 search syntax is sent as typed: `~or` tags, `-negation`, wildcards (`african_*`, one per search), groups (`( ~fox ~wolf )`), and all metatags (`order:`, `type:`, `score:>=100`, `favcount:`, `date:`, `user:`, `fav:`, `pool:`, `id:`, `width:`, `filesize:`, `duration:`, `status:`, `source:`, `description:"…"`, `parent:`, `ischild:`, `randseed:` and more). Autocomplete suggests metatag names and their values (for example `order:` → `order:score`), also after `-` or `~`. The Rating and Sort menus are only added when your search has no `rating:` or `order:` of its own. `limit:` is ignored because the app sets the page size, and e621 allows up to 40 tags per search
+- The `?` button next to Search opens a search cheat sheet with every metatag; tap one to add it to the search
+- Searching for exactly one tag (with or without `rating:`/`order:`) shows the first lines of its wiki above the thumbnails, with Show more to open the full wiki in the app
 - Posts sub-bar: Hot, Popular, Favorites, Blacklist, Saved, and Related tags. Related tags lists tags often used with the current search (with post counts); tap one to add it to the search
 - Hot puts `order:hot` in the search bar and runs it
 - Popular: today's popular posts, with a 3×3 control grid (`«prev` / Day, Week, or Month / `next»`) to change the scale and move the date
 - Sign in sits on the right of the Posts and Pools bar. It checks your e621 username and API key, then shows your name on that button. Tapping it again opens Sign out. While signed in, every API request includes your key so private favorites and other authenticated features work. A Remember my account checkbox saves the username and key on this device when storage works
 - Pools: search pools, then open one to browse its posts in pool order
-- Blacklist: add and remove your own tags. Hard-exclusion tags are always applied and are not listed as removable
+- Blacklist: add and remove your own tags. There is no built-in always-hidden tag list any more; use the blacklist to hide what you don't want to see
 - Saved searches: store a query such as `canid order:score`, run it later, or delete it
 - Rating filter (defaults to all ratings) and sorting (`order:` metatags)
 - Responsive, lazy-loaded thumbnail grid
@@ -22,7 +25,11 @@ An unofficial, client-side image and video browser for the public [e621](https:/
 - Under the image or video: Favorite/Unfavorite, Upvote, and Downvote with the current score and favorite count. They need you to be signed in (otherwise they open Sign in). Voting the same way twice removes the vote
 - Translation notes over images, with a Hide/Show notes toggle. The notes move with pinch zoom and panning; tap a note to read it
 - Comments (loaded when you scroll to them) above the tags, post counts next to every tag, and a Details section under the tags (artist, uploader, upload date, file type, dimensions, size, sources, rating, post ID, MD5, and description)
-- Comments, notes, and descriptions are rendered from DText as plain text with basic formatting; raw HTML is never inserted
+- Tags everywhere (viewer, Related tags, wiki pages, Details artists, autocomplete) are colored by e621 category (artist, copyright, character, species, general, meta, lore, contributor, invalid) and have `+` (add to search), `−` (exclude), and `?` (open the tag's wiki)
+- Long-press a tag (about half a second on touch, or right-click / long click with a mouse) for a menu: Copy tag name, Add to/Remove from blacklist, Add as "or" (`~tag`), Open wiki, and Search only this tag. A normal tap still does what it did before
+- In-app wiki: the full DText wiki page, its active aliases ("Aliased from") and implications ("Implies" / "Implied by"), every tag the page mentions, and a link to the page on e621
+- Hide comments / Show comments toggle in the viewer, remembered on this device (comments are not downloaded while hidden)
+- Comments, notes, wiki pages, and descriptions are rendered from DText as plain text with basic formatting; raw HTML is never inserted
 - Works when `localStorage` is blocked (confirmation, blacklist, saved searches, and remembered accounts then last only for the tab)
 
 
@@ -39,6 +46,6 @@ npm run test:browser
 npm run test:viewer
 ```
 
-`npm run test:viewer` checks the viewer extras (notes alignment under real touch pinch/pan, comments, details, tag counts, related tags, and favorite/vote requests) against mocked API responses, so it never writes to a real account.
+`npm run test:viewer` checks the viewer extras (notes alignment under real touch pinch/pan, comments and the Hide comments toggle, details, tag counts and colors, related tags, the tag long-press menu, the wiki preview and wiki page with aliases/implications, metatag autocomplete, and favorite/vote requests) against mocked API responses, so it never writes to a real account.
 
 Browser tests use safe (`rating:s`) queries only.

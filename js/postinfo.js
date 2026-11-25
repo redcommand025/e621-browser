@@ -5,7 +5,7 @@
  * `files`/`stats`/`has`).
  */
 import { safeDTextUrl } from "./dtext.js";
-import { isBlockedTag, tagName, tokenize } from "./filter.js";
+import { tagName, tokenize } from "./filter.js";
 
 function num(value, fallback = null) {
   const n = Number(value);
@@ -83,7 +83,7 @@ export function postSources(post) {
 export function postArtists(post) {
   const tags = post && post.tags;
   const list = tags && !Array.isArray(tags) && Array.isArray(tags.artist) ? tags.artist : [];
-  return list.map(tagName).filter((name) => name && !isBlockedTag(name));
+  return list.map(tagName).filter(Boolean);
 }
 
 export function postDetails(post) {
@@ -246,14 +246,14 @@ export function voteRequestParams(currentVote, clicked) {
 
 /* ---------- Tags ---------- */
 
-/** Positive, plain tags from a search (no metatags, exclusions, or blocked tags). */
+/** Positive, plain tags from a search (no metatags, exclusions, wildcards, or groups). */
 export function searchTagNames(query) {
   const out = [];
   for (const raw of tokenize(query)) {
     const token = raw.trim().toLowerCase();
-    if (!token || token.startsWith("-") || token.includes(":") || token.includes("*")) continue;
+    if (!token || token.startsWith("-") || token.includes(":") || token.includes("*") || /[()]/.test(token)) continue;
     const name = token.replace(/^~/, "");
-    if (!name || isBlockedTag(name) || out.includes(name)) continue;
+    if (!name || out.includes(name)) continue;
     out.push(name);
   }
   return out;
@@ -273,7 +273,7 @@ export function parseRelatedTagString(value) {
 
 /**
  * Merge related tags of several tag records. Tags related to every search tag
- * rank first; already-searched, blacklisted, and blocked tags are dropped.
+ * rank first; already-searched and blacklisted tags are dropped.
  */
 export function mergeRelatedTags(records, { exclude = [], limit = 30 } = {}) {
   const skip = new Set(exclude.map(tagName));
@@ -282,7 +282,7 @@ export function mergeRelatedTags(records, { exclude = [], limit = 30 } = {}) {
   for (const record of list) {
     const self = tagName(record.name);
     for (const { name, weight } of parseRelatedTagString(record.related_tags)) {
-      if (!name || name === self || skip.has(name) || isBlockedTag(name)) continue;
+      if (!name || name === self || skip.has(name)) continue;
       const entry = totals.get(name) || { name, weight: 0, hits: 0 };
       entry.weight += weight;
       entry.hits += 1;
@@ -308,7 +308,7 @@ export function aggregatePageTags(posts, { exclude = [], limit = 30 } = {}) {
       for (const tag of arr) names.add(tagName(tag));
     }
     for (const name of names) {
-      if (!name || skip.has(name) || isBlockedTag(name)) continue;
+      if (!name || skip.has(name)) continue;
       counts.set(name, (counts.get(name) || 0) + 1);
     }
   }
@@ -331,4 +331,25 @@ export function tagNameBatches(names, size = 100) {
   const batches = [];
   for (let i = 0; i < unique.length; i += size) batches.push(unique.slice(i, i + size));
   return batches;
+}
+
+/**
+ * Sort alias and implication records into what matters for one tag:
+ * aliasOf (this tag redirects to), aliases (other names for it),
+ * implies (tags it adds), impliedBy (tags that add it).
+ */
+export function tagRelations(name, aliases = [], implications = []) {
+  const tag = tagName(name);
+  const pick = (list, side, other) =>
+    [...new Set((list || [])
+      .filter((r) => r && r.status !== "deleted" && r.status !== "retired" && tagName(r[side]) === tag)
+      .map((r) => tagName(r[other]))
+      .filter((n) => n && n !== tag))].sort();
+  const aliasOf = pick(aliases, "antecedent_name", "consequent_name")[0] || "";
+  return {
+    aliasOf,
+    aliases: pick(aliases, "consequent_name", "antecedent_name"),
+    implies: pick(implications, "antecedent_name", "consequent_name"),
+    impliedBy: pick(implications, "consequent_name", "antecedent_name"),
+  };
 }

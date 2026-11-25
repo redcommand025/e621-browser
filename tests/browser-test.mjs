@@ -12,7 +12,6 @@ import {
   collectTagsByCategory,
   formatPostStats,
   formatTagCategoryLabel,
-  isBlockedTag,
   normalizePostsResponse,
   tagName,
   TAG_CATEGORY_ORDER,
@@ -195,7 +194,7 @@ try {
     assert.ok(after.length >= 1, "Posts view should auto-load recent posts after confirmation");
     const tags = new URL(after[0]).searchParams.get("tags") || "";
     assert.match(tags, /(^|\s)rating:s(\s|$)/);
-    assert.match(tags, /(^|\s)-young(\s|$)/);
+    assert.doesNotMatch(tags, /(^|\s)-young(\s|$)/, "no forced exclusions");
     const brand = await page.$eval(".brand", (el) => el.textContent.trim());
     assert.equal(brand, "e621-red");
     assert.equal(await page.$eval('[data-view="posts"]', (el) => el.getAttribute("aria-selected")), "true");
@@ -298,11 +297,11 @@ try {
     assert.ok(postsCalls.length >= 1, "expected a posts request");
     for (const url of postsCalls) {
       const tags = new URL(url).searchParams.get("tags") || "";
-      assert.match(tags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(tags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       assert.match(tags, /(^|\s)rating:s(\s|$)/);
       assert.match(new URL(url).searchParams.get("_client") || "", /e621-browser/);
     }
-    log(`PASS safe grid loaded (${count} thumbs) with -young and rating:s`);
+    log(`PASS safe grid loaded (${count} thumbs) with rating:s and no forced exclusions`);
 
     await page.click("#grid .thumb");
     await page.waitForSelector("#viewer[open], dialog.viewer[open]");
@@ -329,21 +328,12 @@ try {
       }))
     );
     assert.ok(suggestions.length > 0, "expected autocomplete suggestions");
-    const blocked = ["young", "loli", "shota", "cub"];
     for (const item of suggestions) {
-      const hay = `${item.name} ${item.text}`.toLowerCase();
-      for (const tag of blocked) {
-        assert.equal(
-          hay.split(/\s+/).includes(tag),
-          false,
-          `blocked tag ${tag} appeared in suggestions`
-        );
-      }
       assert.match(item.text, /\d/);
     }
     const autoCalls = apiCalls.filter((url) => url.includes("/tags/autocomplete.json"));
     assert.ok(autoCalls.length >= 1, "expected autocomplete request");
-    log(`PASS autocomplete suggestions (${suggestions.length}) show counts and omit blocked tags`);
+    log(`PASS autocomplete suggestions (${suggestions.length}) show counts`);
   });
 
   await withPage(browser, base, null, async (page, { apiCalls }) => {
@@ -358,8 +348,9 @@ try {
     const last = postsCalls.at(-1);
     const tags = new URL(last).searchParams.get("tags") || "";
     assert.match(tags, /order:score/);
-    assert.match(tags, /(^|\s)-young(\s|$)/);
-    log("PASS sorting adds order:score and keeps -young");
+    assert.equal(tags.match(/order:/g).length, 1, "only one order: token");
+    assert.doesNotMatch(tags, /(^|\s)-young(\s|$)/, "no forced exclusions");
+    log("PASS sorting adds order:score once and adds no forced exclusions");
   });
 
   await withPage(browser, base, null, async (page) => {
@@ -496,7 +487,7 @@ try {
       const favTags = new URL(favCalls.at(-1)).searchParams.get("tags") || "";
       assert.match(favTags, /fav:bitWolfy/i);
       assert.match(favTags, /(^|\s)rating:s(\s|$)/);
-      assert.match(favTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(favTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       const favBadges = await page.$$eval("#grid .badge", (els) => els.map((el) => el.textContent));
       assert.ok(favBadges.length > 0);
       assert.ok(favBadges.every((b) => b === "S"), `non-safe favorite visible: ${favBadges}`);
@@ -510,9 +501,6 @@ try {
       await page.waitForFunction(() => document.querySelectorAll("#pool-list .pool-item").length > 0, { timeout: 20000 });
       const poolNames = await page.$$eval("#pool-list .pool-item strong", (els) => els.map((el) => el.textContent.toLowerCase()));
       for (const name of poolNames) {
-        for (const tag of ["young", "loli", "shota", "cub"]) {
-          assert.equal(name.split(/\s+/).includes(tag), false, `blocked pool listed: ${name}`);
-        }
       }
       await page.click("#pool-list .pool-item");
       await page.waitForFunction(
@@ -585,24 +573,18 @@ try {
       const hotTags = new URL(hotUrl).searchParams.get("tags") || "";
       assert.match(hotTags, /order:hot/i);
       assert.match(hotTags, /(^|\s)rating:s(\s|$)/);
-      assert.match(hotTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(hotTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       log("PASS Hot puts order:hot in the search bar and query");
 
       await page.click('[data-sub="blacklist"]');
       await page.waitForSelector("#blacklist-panel:not([hidden])");
-      const locked = await page.$eval("#blacklist-panel", (el) => el.textContent);
-      assert.match(locked, /young/);
-      assert.match(locked, /loli/);
-      await page.$eval("#blacklist-add", (el) => { el.value = ""; });
-      await page.type("#blacklist-add", "young");
-      await page.click("#blacklist-form button[type=submit]");
-      const afterBlocked = await page.$$eval("#blacklist-list li", (els) => els.map((el) => el.textContent));
-      assert.equal(afterBlocked.some((text) => /\byoung\b/i.test(text)), false, "hard exclusion must not be a removable blacklist item");
+      const panelText = await page.$eval("#blacklist-panel", (el) => el.textContent);
+      assert.doesNotMatch(panelText, /Always hidden|\byoung\b|\bloli\b|\bshota\b|\bcub\b/i, "no always-hidden tag list");
       await page.$eval("#blacklist-add", (el) => { el.value = ""; });
       await page.type("#blacklist-add", "canine");
       await page.click("#blacklist-form button[type=submit]");
       await page.waitForFunction(() => [...document.querySelectorAll("#blacklist-list li")].some((el) => /canine/i.test(el.textContent)));
-      log("PASS blacklist adds user tags and keeps hard exclusions locked");
+      log("PASS blacklist adds user tags and shows no always-hidden list");
 
       await page.$eval("#search", (el) => { el.value = ""; });
       await page.type("#search", "canid order:score");
@@ -621,7 +603,7 @@ try {
       assert.match(savedTags, /canid/i);
       assert.match(savedTags, /order:score/i);
       assert.match(savedTags, /(^|\s)rating:s(\s|$)/);
-      assert.match(savedTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(savedTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       log("PASS saved search stores and runs canid order:score");
     }
   );
@@ -736,13 +718,11 @@ try {
     assert.ok(postsUrls.length >= 1, "expected a default posts request");
     const tags = new URL(postsUrls[0]).searchParams.get("tags") || "";
     assert.equal(/rating:s/.test(tags), false, "default load must not force Safe");
-    assert.match(tags, /(^|\s)-young(\s|$)/);
-    assert.match(tags, /(^|\s)-loli(\s|$)/);
-    assert.match(tags, /(^|\s)-shota(\s|$)/);
-    assert.match(tags, /(^|\s)-cub(\s|$)/);
+    assert.doesNotMatch(tags, /(^|\s)-young(\s|$)/, "no forced exclusions");
+    assert.doesNotMatch(tags, /(^|\s)-(loli|shota|cub)(\s|$)/, "no forced exclusions");
     const status = await page.$eval("#status", (el) => el.textContent);
     assert.match(status, /posts loaded/i);
-    log("PASS default all-ratings recent load (getItem always null) sends exclusions and shows results");
+    log("PASS default all-ratings recent load (getItem always null) sends no forced exclusions and shows results");
     await context.close();
   }
 
@@ -857,9 +837,6 @@ try {
       for (const row of tagRows) {
         assert.equal(row.plus, "+");
         assert.equal(row.minus, "-");
-        for (const tag of ["young", "loli", "shota", "cub"]) {
-          assert.equal(row.name === tag, false, "blocked tag shown: " + row.name);
-        }
       }
       const pick = tagRows.find((row) => row.name && !row.name.includes(":")) || tagRows[0];
       const firstHref = await page.$eval("#viewer-open", (el) => el.getAttribute("href"));
@@ -899,7 +876,7 @@ try {
       const replaceTags = new URL(replaceUrl).searchParams.get("tags") || "";
       assert.match(replaceTags, new RegExp("(^|\\s)" + pick.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)"));
       assert.match(replaceTags, /(^|\s)rating:s(\s|$)/);
-      assert.match(replaceTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(replaceTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       log("PASS tapping a tag replaces the search and runs it (" + pick.name + ")");
 
       await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
@@ -934,7 +911,7 @@ try {
       );
       const addTags = new URL(addUrl).searchParams.get("tags") || "";
       assert.match(addTags, /(^|\s)rating:s(\s|$)/);
-      assert.match(addTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(addTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       log("PASS + adds the tag to the current search (" + added + ")");
 
       await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0 || /No posts found/i.test(document.getElementById("status").textContent), { timeout: 20000 });
@@ -954,7 +931,7 @@ try {
         );
         const minusTags = new URL(minusUrl).searchParams.get("tags") || "";
         assert.match(minusTags, /(^|\s)rating:s(\s|$)/);
-        assert.match(minusTags, /(^|\s)-young(\s|$)/);
+        assert.doesNotMatch(minusTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
         log("PASS - excludes the tag (" + excluded + ")");
       } else {
         log("SKIP minus-tag click; added search returned no posts");
@@ -981,7 +958,7 @@ try {
       assert.ok(ids.length, "needed post ids from the safe grid");
       await new Promise((resolve) => setTimeout(resolve, 900));
       const apiUrl = buildApiUrl("/posts.json", {
-        tags: "id:" + ids.join(",") + " rating:s -young -loli -shota -cub",
+        tags: "id:" + ids.join(",") + " rating:s",
         limit: String(Math.min(Math.max(ids.length, 1), 24)),
         mode: "extended",
       });
@@ -1035,7 +1012,7 @@ try {
         const list = Array.isArray(tags[key]) ? tags[key] : String(tags[key] || "").split(/\s+/);
         for (const raw of list) {
           const name = tagName(raw);
-          if (name && !isBlockedTag(name)) fromApi.add(name);
+          if (name) fromApi.add(name);
         }
       }
       const fromDom = new Set(rendered.flatMap((group) => group.tags));
@@ -1045,9 +1022,6 @@ try {
       const expectedKnown = TAG_CATEGORY_ORDER.filter((key) => renderedKnown.includes(key));
       assert.deepEqual(renderedKnown, expectedKnown);
       const titles = rendered.map((group) => group.title);
-      for (const blocked of ["young", "loli", "shota", "cub"]) {
-        assert.equal(fromDom.has(blocked), false);
-      }
       log("PASS viewer tags match the API and use the requested category order (" + titles.join(", ") + ")");
     }
   );
@@ -1355,7 +1329,7 @@ try {
         } }
       );
       const homeTags = new URL(homeUrl).searchParams.get("tags") || "";
-      assert.match(homeTags, /(^|\s)-young(\s|$)/);
+      assert.doesNotMatch(homeTags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       log("PASS tapping e621-red clears the search and loads recent posts");
 
       await page.waitForFunction(() => document.querySelectorAll("#grid .thumb").length > 0, { timeout: 20000 });
@@ -1504,9 +1478,6 @@ try {
       assert.ok(named.count > 0, "expected name search results");
       for (const name of named.names) {
         assert.match(name, /official/);
-        for (const tag of ["young", "loli", "shota", "cub"]) {
-          assert.equal(name.split(/\s+/).includes(tag), false, "blocked pool listed: " + name);
-        }
       }
       if (!named.moreDisabled) {
         const beforeNamed = named.count;
@@ -1678,7 +1649,7 @@ try {
       for (const url of familyUrls) {
         const tags = decodeURIComponent(new URL(url).searchParams.get("tags") || "");
         assert.match(tags, /(^|\s)rating:s(\s|$)/);
-        assert.match(tags, /(^|\s)-young(\s|$)/);
+        assert.doesNotMatch(tags, /(^|\s)-young(\s|$)/, "no forced exclusions");
       }
 
       const beforeMeta = await page.$eval("#viewer-meta", (el) => el.textContent);

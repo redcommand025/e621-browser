@@ -1,39 +1,31 @@
 /**
- * Hard exclusion and search-query helpers.
- * Blocked tags cannot be disabled by UI or URL parameters.
+ * Search-query and post helpers.
+ * Queries are passed to e621 as typed: ~or tags, -negation, wildcards,
+ * ( groups ), and every metatag. The only things this adds are the user's
+ * blacklist (as -tag), and the Rating and Sort selects when the query does not
+ * already set rating: or order: itself.
  */
-export const BLOCKED_TAGS = Object.freeze(["the_narscix_war"]);
-export const FORCED_EXCLUSIONS = Object.freeze(
-  BLOCKED_TAGS.map((tag) => `-${tag}`)
-);
 export const MAX_SEARCH_TAGS = 40;
 
-const BLOCKED_SET = new Set(BLOCKED_TAGS);
-
 export function normalizeTag(value) {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^-+/, (prefix) => prefix); // keep leading minuses for callers that need them
+  return String(value ?? "").trim().toLowerCase();
 }
 
+/** Lowercased tag without a leading - or ~ prefix. */
 export function tagName(value) {
   return String(value ?? "")
     .trim()
     .toLowerCase()
-    .replace(/^-+/, "");
+    .replace(/^[-~]+/, "");
 }
 
-export function isBlockedTag(value) {
-  return BLOCKED_SET.has(tagName(value));
-}
-
+/**
+ * Split a search on whitespace, keeping double-quoted metatag values
+ * together (for example description:"hello there").
+ */
 export function tokenize(query) {
   if (!query) return [];
-  return String(query)
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
+  return String(query).match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
 }
 
 export function collectTags(post) {
@@ -67,9 +59,9 @@ export function postFileUrl(post) {
   return url || null;
 }
 
+/** Posts without a viewable file (deleted, or hidden by e621) are skipped. */
 export function shouldExcludePost(post) {
-  if (!post || !postFileUrl(post)) return true;
-  return collectTags(post).some((tag) => BLOCKED_SET.has(tag));
+  return !post || !postFileUrl(post);
 }
 
 export function filterPosts(posts) {
@@ -79,13 +71,7 @@ export function filterPosts(posts) {
 
 export function filterSuggestions(suggestions) {
   if (!Array.isArray(suggestions)) return [];
-  return suggestions.filter((item) => {
-    if (item == null) return false;
-    if (typeof item === "string") return !isBlockedTag(item);
-    const name = item.name || item.tag || "";
-    const antecedent = item.antecedent_name || item.antecedent || "";
-    return !isBlockedTag(name) && !isBlockedTag(antecedent);
-  });
+  return suggestions.filter((item) => item != null && (typeof item === "string" || item.name || item.tag));
 }
 
 export function normalizePostsResponse(data) {
@@ -94,22 +80,32 @@ export function normalizePostsResponse(data) {
   return [];
 }
 
-function isOrderToken(token) {
-  return /^[-]?order:/.test(token);
+/** The metatag name of a token ("-order:score" -> "order"), or "". */
+export function tokenMetatag(token) {
+  const m = /^[-~]?([a-z_]+):/i.exec(String(token || ""));
+  return m ? m[1].toLowerCase() : "";
 }
 
-function isRatingToken(token) {
-  return /^[-]?rating:/.test(token);
+export function queryHasMetatag(query, names) {
+  const want = new Set((Array.isArray(names) ? names : [names]).map((n) => String(n).toLowerCase()));
+  return tokenize(query).some((token) => want.has(tokenMetatag(token)));
 }
 
-function isLimitToken(token) {
-  return /^[-]?limit:/.test(token);
+const ORDER_METATAGS = ["order", "randseed"];
+
+function isGroupToken(token) {
+  return /^[-~]?\($/.test(token) || token === ")";
 }
 
 /**
  * Build a tags string for posts.json.
- * Always appends hard exclusions. Drops blocked search terms.
- * If the query would exceed e621's 40-tag limit, user tags are trimmed first.
+ * - The user's tokens are kept exactly as typed (only exact duplicates of
+ *   plain tags are dropped; group parentheses are never touched).
+ * - limit: is dropped because the app controls the page size.
+ * - Blacklist tags become -tag unless the search already names that tag.
+ * - The Rating select adds rating:X only if the query has no rating: token,
+ *   and the Sort select adds order:X only if the query has no order:/randseed:.
+ * - If the query would exceed e621's 40-tag limit, user tags are trimmed last-first.
  */
 export function buildSearchQuery({
   userQuery = "",
@@ -117,99 +113,87 @@ export function buildSearchQuery({
   order = "",
   blacklist = [],
 } = {}) {
-  const droppedBlocked = [];
   const droppedForLimit = [];
   const seen = new Set();
   const userTokens = [];
+  const mentioned = new Set();
 
   for (const raw of tokenize(userQuery)) {
     const token = raw.trim();
-    const name = tagName(token);
-    if (!name) continue;
-    if (isOrderToken(token) || isLimitToken(token)) continue;
-    if (rating && rating !== "all" && isRatingToken(token)) continue;
-    if (isBlockedTag(token)) {
-      droppedBlocked.push(token);
-      continue;
+    if (!token) continue;
+    if (tokenMetatag(token) === "limit") continue;
+    if (!isGroupToken(token)) {
+      const key = token.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!tokenMetatag(token)) mentioned.add(tagName(token));
     }
-    const key = token.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
     userTokens.push(token);
   }
 
   const extras = [];
   for (const raw of blacklist || []) {
     const name = tagName(raw);
-    if (!name || isBlockedTag(name)) continue;
+    if (!name || mentioned.has(name)) continue;
     const token = `-${name}`;
-    if (seen.has(token) || seen.has(name)) continue;
+    if (seen.has(token)) continue;
     seen.add(token);
     extras.push(token);
   }
 
-  if (rating && rating !== "all") {
-    const token = `rating:${rating}`;
-    if (!seen.has(token)) {
-      seen.add(token);
-      extras.push(token);
-    }
+  const ratingInQuery = queryHasMetatag(userQuery, "rating");
+  const ratingApplied = Boolean(rating && rating !== "all" && !ratingInQuery);
+  if (ratingApplied) extras.push(`rating:${rating}`);
+
+  const orderInQuery = queryHasMetatag(userQuery, ORDER_METATAGS);
+  if (order && !orderInQuery) {
+    extras.push(order.startsWith("order:") ? order : `order:${order}`);
   }
 
-  if (order) {
-    const token = order.startsWith("order:") ? order : `order:${order}`;
-    if (!seen.has(token)) {
-      seen.add(token);
-      extras.push(token);
-    }
-  }
-
-  const forced = [];
-  for (const token of FORCED_EXCLUSIONS) {
-    if (!seen.has(token)) {
-      seen.add(token);
-      forced.push(token);
-    }
-  }
-
-  const reserved = extras.length + forced.length;
-  const allowedUser = Math.max(0, MAX_SEARCH_TAGS - reserved);
+  const groupTokens = userTokens.filter(isGroupToken).length;
+  const allowedUser = Math.max(0, MAX_SEARCH_TAGS - extras.length);
   let keptUser = userTokens;
-  if (userTokens.length > allowedUser) {
-    droppedForLimit.push(...userTokens.slice(allowedUser));
-    keptUser = userTokens.slice(0, allowedUser);
+  if (userTokens.length - groupTokens > allowedUser) {
+    // Drop blacklist extras first, then user tags, so the user's search wins.
+    while (extras.length && userTokens.length - groupTokens + extras.length > MAX_SEARCH_TAGS && extras[0].startsWith("-")) {
+      extras.shift();
+    }
+    const room = Math.max(0, MAX_SEARCH_TAGS - extras.length);
+    if (userTokens.length - groupTokens > room) {
+      keptUser = [];
+      let count = 0;
+      for (const token of userTokens) {
+        if (isGroupToken(token)) {
+          keptUser.push(token);
+          continue;
+        }
+        if (count < room) {
+          keptUser.push(token);
+          count += 1;
+        } else {
+          droppedForLimit.push(token);
+        }
+      }
+    }
   }
 
-  const tags = [...keptUser, ...extras, ...forced].join(" ");
+  const tags = [...keptUser, ...extras].join(" ");
   let warning = "";
-  if (droppedBlocked.length) {
-    warning = "Blocked tags were removed from the search.";
-  }
   if (droppedForLimit.length) {
-    warning = `${warning ? `${warning} ` : ""}Search was trimmed to ${MAX_SEARCH_TAGS} tags so required exclusions still fit.`;
+    warning = `Search was trimmed to ${MAX_SEARCH_TAGS} tags (e621's limit).`;
   }
 
   return {
     tags,
-    droppedBlocked,
     droppedForLimit,
+    ratingApplied,
     warning,
   };
 }
 
-
-export function nameContainsBlockedTerm(name) {
-  const tokens = String(name || "")
-    .toLowerCase()
-    .replace(/[_\-+]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-  return tokens.some((token) => BLOCKED_SET.has(token));
-}
-
 export function filterPools(pools) {
   if (!Array.isArray(pools)) return [];
-  return pools.filter((pool) => pool && !nameContainsBlockedTerm(pool.name));
+  return pools.filter((pool) => pool && pool.name);
 }
 
 export function poolResponseHasMore(rawCount, limit, page, maxPage) {
@@ -296,7 +280,7 @@ function uniqueAllowedTags(list) {
   const seen = new Set();
   for (const raw of tagListFrom(list)) {
     const name = tagName(raw);
-    if (!name || isBlockedTag(name) || seen.has(name)) continue;
+    if (!name || seen.has(name)) continue;
     seen.add(name);
     names.push(name);
   }
@@ -304,7 +288,7 @@ function uniqueAllowedTags(list) {
 }
 
 /**
- * Group a post's tags by category. Blocked tags are omitted.
+ * Group a post's tags by category.
  * Accepts a category object or a flat array (listed as general).
  */
 export function collectTagsByCategory(post) {
