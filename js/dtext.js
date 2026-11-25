@@ -110,11 +110,20 @@ export function parseInline(source, depth = 0) {
           const inner = rest.slice(2, end);
           const [page, label] = inner.split("|");
           const name = page.trim();
+          if (name.startsWith("#")) {
+            // In-page anchor on e621: keep just the label.
+            flush();
+            pushText(out, (label != null && label.trim()) || "");
+            i += end + 2;
+            continue;
+          }
           if (name) {
             flush();
+            const title = name.toLowerCase().replace(/\s+/g, "_").replace(/#.*$/, "");
             out.push({
               type: "link",
-              href: DTEXT_ORIGIN + "/wiki_pages/show_or_new?title=" + encodeURIComponent(name.toLowerCase().replace(/\s+/g, "_")),
+              href: DTEXT_ORIGIN + "/wiki_pages/show_or_new?title=" + encodeURIComponent(title),
+              wiki: title || undefined,
               children: [text((label != null && label.trim()) || name)],
             });
             i += end + 2;
@@ -151,6 +160,7 @@ export function parseInline(source, depth = 0) {
           out.push({
             type: "link",
             href: DTEXT_ORIGIN + "/posts?tags=" + encodeURIComponent(query),
+            search: query,
             children: [text(query)],
           });
           i += end + 2;
@@ -305,6 +315,80 @@ export function dtextPlainText(nodes) {
       out += dtextPlainText(node.children);
       if (["p", "heading", "quote", "section"].includes(node.type)) out += "\n";
     }
+  }
+  return out;
+}
+
+/**
+ * A short preview of a DText body: the first `maxBlocks` paragraph-like
+ * blocks, cut to about `maxChars` characters. Returns { nodes, truncated }.
+ * Sections, code, and quotes are skipped in favor of plain paragraphs.
+ */
+export function dtextExcerpt(source, { maxBlocks = 3, maxChars = 320 } = {}) {
+  const blocks = parseDText(source);
+  const out = [];
+  let used = 0;
+  let truncated = false;
+  for (const block of blocks) {
+    if (!["p", "heading", "list"].includes(block.type)) {
+      truncated = true;
+      continue;
+    }
+    if (out.length >= maxBlocks || used >= maxChars) {
+      truncated = true;
+      break;
+    }
+    const length = dtextPlainText([block]).length;
+    if (used + length > maxChars && block.type === "p") {
+      out.push({ type: "p", children: clipInline(block.children, maxChars - used) });
+      truncated = true;
+      used = maxChars;
+      break;
+    }
+    out.push(block);
+    used += length;
+  }
+  if (out.length < blocks.length) truncated = true;
+  return { nodes: out, truncated };
+}
+
+function clipInline(nodes, budget) {
+  const out = [];
+  let left = Math.max(0, budget);
+  for (const node of nodes) {
+    if (left <= 0) break;
+    if (node.type === "text") {
+      if (node.text.length <= left) {
+        out.push(node);
+        left -= node.text.length;
+      } else {
+        const cut = node.text.slice(0, left).replace(/\s+\S*$/, "");
+        out.push({ type: "text", text: (cut || node.text.slice(0, left)) + "…" });
+        left = 0;
+      }
+    } else if (node.type === "br") {
+      out.push(node);
+      left -= 1;
+    } else {
+      const len = dtextPlainText([node]).length;
+      if (len <= left) {
+        out.push(node);
+        left -= len;
+      } else {
+        out.push({ ...node, children: clipInline(node.children || [], left) });
+        left = 0;
+      }
+    }
+  }
+  return out;
+}
+
+/** Wiki page titles linked with [[...]] in a parsed DText tree (in order, unique). */
+export function dtextWikiTitles(nodes, out = []) {
+  for (const node of nodes || []) {
+    if (node.type === "link" && node.wiki && !out.includes(node.wiki)) out.push(node.wiki);
+    if (node.children) dtextWikiTitles(node.children, out);
+    if (node.items) for (const item of node.items) dtextWikiTitles(item.children, out);
   }
   return out;
 }

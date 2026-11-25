@@ -8,9 +8,7 @@ import {
   formatPoolName,
   formatPostStats,
   formatTagCategoryLabel,
-  isBlockedTag,
   isValidUsername,
-  nameContainsBlockedTerm,
   poolResponseHasMore,
   poolDirectionOpen,
   shouldFetchMorePools,
@@ -20,15 +18,17 @@ import {
   postPoolIds,
   stepPoolIds,
   sanitizeUsername,
+  queryHasMetatag,
   tagName,
+  tokenMetatag,
   tokenize,
-} from "./filter.js?v=20261124a";
+} from "./filter.js?v=20261125a";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261124a";
+} from "./storage.js?v=20261125a";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -39,6 +39,9 @@ import {
   fetchComments,
   fetchNotes,
   fetchTagsByNames,
+  fetchTagAliases,
+  fetchTagImplications,
+  fetchWikiPage,
   COMMENT_PAGE_LIMIT,
   fetchPoolById,
   fetchPools,
@@ -57,8 +60,16 @@ import {
   verifyBasicAuth,
   videoSources,
   votePost,
-} from "./api.js?v=20261124a";
-import { parseDText } from "./dtext.js?v=20261124a";
+} from "./api.js?v=20261125a";
+import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125a";
+import {
+  METATAGS,
+  SEARCH_SYNTAX_HELP,
+  metatagSuggestions,
+  singleSearchTag,
+  splitTermPrefix,
+} from "./search.js?v=20261125a";
+import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125a";
 import {
   activeNotes,
   aggregatePageTags,
@@ -74,8 +85,9 @@ import {
   postUserVote,
   searchTagNames,
   tagNameBatches,
+  tagRelations,
   voteRequestParams,
-} from "./postinfo.js?v=20261124a";
+} from "./postinfo.js?v=20261125a";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -84,6 +96,8 @@ const FAV_USER_KEY = "e621-browser:fav-user";
 const AUTH_USER_KEY = "e621-browser:auth-user";
 const AUTH_KEY_KEY = "e621-browser:auth-key";
 const SAVED_KEY = "e621-browser:saved-searches";
+const COMMENTS_HIDDEN_KEY = "e621-browser:comments-hidden";
+const LONG_PRESS_MS = 500;
 const AUTOCOMPLETE_MIN = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 350;
 const MAX_APPENDED_PAGES = 5;
@@ -186,6 +200,30 @@ const els = {
   relatedPanel: document.getElementById("related-panel"),
   relatedNote: document.getElementById("related-note"),
   relatedList: document.getElementById("related-list"),
+  viewerCommentsToggle: document.getElementById("viewer-comments-toggle"),
+  viewerCommentsBody: document.getElementById("viewer-comments-body"),
+  wikiPreview: document.getElementById("wiki-preview"),
+  wikiPreviewTitle: document.getElementById("wiki-preview-title"),
+  wikiPreviewBody: document.getElementById("wiki-preview-body"),
+  wikiPreviewMore: document.getElementById("wiki-preview-more"),
+  wikiDialog: document.getElementById("wiki-dialog"),
+  wikiClose: document.getElementById("wiki-close"),
+  wikiOpen: document.getElementById("wiki-open"),
+  wikiTitle: document.getElementById("wiki-title"),
+  wikiTag: document.getElementById("wiki-tag"),
+  wikiStatus: document.getElementById("wiki-status"),
+  wikiRelations: document.getElementById("wiki-relations"),
+  wikiBody: document.getElementById("wiki-body"),
+  wikiMentions: document.getElementById("wiki-mentions"),
+  wikiMentionsList: document.getElementById("wiki-mentions-list"),
+  tagMenu: document.getElementById("tag-menu"),
+  tagMenuTitle: document.getElementById("tag-menu-title"),
+  tagMenuStatus: document.getElementById("tag-menu-status"),
+  searchHelp: document.getElementById("search-help"),
+  searchHelpBtn: document.getElementById("search-help-btn"),
+  searchHelpClose: document.getElementById("search-help-close"),
+  searchHelpSyntax: document.getElementById("search-help-syntax"),
+  searchHelpMetatags: document.getElementById("search-help-metatags"),
 };
 
 const state = {
@@ -231,6 +269,17 @@ const state = {
   comments: { postId: null, page: 0, loading: false, done: false, seq: 0 },
   commentsObserver: null,
   tagCounts: new Map(),
+  tagCategories: new Map(),
+  commentsHidden: false,
+  wikiCache: new Map(),
+  relationCache: new Map(),
+  wikiSeq: 0,
+  wikiPreviewSeq: 0,
+  wikiPreviewTag: "",
+  tagMenuName: "",
+  // The finger that long-pressed is still down when the menu opens; its
+  // release "click" must not hit the backdrop or a menu item.
+  tagMenuGuard: false,
   tagCountSeq: 0,
   relatedSeq: 0,
 };
@@ -253,7 +302,7 @@ function normalizeBlacklist(tags) {
   const out = [];
   for (const raw of tags || []) {
     const name = tagName(raw);
-    if (!name || isBlockedTag(name) || seen.has(name)) continue;
+    if (!name || seen.has(name)) continue;
     seen.add(name);
     out.push(name);
   }
@@ -277,16 +326,22 @@ function currentQuery() {
   return buildSearchQuery({
     userQuery: els.search.value,
     rating: els.rating.value,
-    order: orderFromSearch() || els.sort.value,
+    order: els.sort.value,
     blacklist: blacklistTags(),
   });
 }
 
-function clientFilter(posts) {
-  return applyClientFilters(posts, {
-    rating: els.rating.value,
-    blacklist: blacklistTags(),
-  });
+// The Rating select filters results unless the search sets its own rating:.
+// Blacklisted tags the search asks for by name are not hidden.
+function clientFilter(posts, { query = null } = {}) {
+  let rating = els.rating.value;
+  let blacklist = blacklistTags();
+  if (query != null) {
+    if (queryHasMetatag(query, "rating")) rating = "all";
+    const named = new Set(tokenize(query).filter((t) => !tokenMetatag(t)).map((t) => tagName(t)));
+    blacklist = blacklist.filter((tag) => !named.has(tag));
+  }
+  return applyClientFilters(posts, { rating, blacklist });
 }
 
 function exclusionTagString() {
@@ -388,19 +443,24 @@ function lastSearchTerm(value, caret) {
   return parts[parts.length - 1] || "";
 }
 
-function applySuggestion(name) {
+function applySuggestion(value) {
   const input = els.search;
   const caret = input.selectionStart ?? input.value.length;
   const term = lastSearchTerm(input.value, caret);
   const prefix = input.value.slice(0, caret - term.length);
   const suffix = input.value.slice(caret);
-  const minus = term.startsWith("-") ? "-" : "";
-  const next = `${prefix}${minus}${name} ${suffix.replace(/^\s*/, "")}`;
-  input.value = next.replace(/\s+$/, " ");
-  const pos = (prefix + minus + name + " ").length;
+  // Keep a -, ~, or -( style prefix the user typed.
+  const { prefix: mark } = splitTermPrefix(term);
+  // A metatag name ("order:") stays open so its values can be suggested next.
+  const open = /:$/.test(value);
+  const insert = mark + value + (open ? "" : " ");
+  const rest = open ? suffix : suffix.replace(/^\s*/, "");
+  input.value = (prefix + insert + rest).replace(/\s+$/, open ? "" : " ");
+  const pos = (prefix + insert).length;
   input.focus();
   input.setSelectionRange(pos, pos);
   hideSuggestions();
+  if (open) requestSuggestions();
 }
 
 function renderSuggestions(items) {
@@ -423,13 +483,42 @@ function renderSuggestions(items) {
     if (item.antecedent_name && item.antecedent_name !== item.name) {
       label.textContent = `${item.antecedent_name} → ${item.name}`;
     } else {
-      label.textContent = item.name;
+      label.textContent = item.label || item.name;
     }
     const count = document.createElement("span");
     count.className = "suggest-count";
-    count.textContent = formatCount(item.post_count);
-    li.append(label, count);
+    if (item.kind) {
+      li.classList.add("suggest-meta");
+      count.textContent = item.hint || "";
+      li.append(label, count);
+    } else {
+      const category = tagCategoryName(item.category);
+      if (category) {
+        li.dataset.category = category;
+        li.style.setProperty("--tag-color", tagCategoryColor(category));
+        rememberTagCategory(item.name, category);
+      }
+      count.textContent = formatCount(item.post_count);
+      const wiki = document.createElement("button");
+      wiki.type = "button";
+      wiki.className = "secondary suggest-wiki";
+      wiki.textContent = "?";
+      wiki.tabIndex = -1;
+      wiki.setAttribute("aria-label", "Open the wiki for " + item.name);
+      wiki.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      wiki.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        hideSuggestions();
+        openWiki(item.name);
+      });
+      li.append(label, count, wiki);
+    }
     li.addEventListener("mousedown", (event) => {
+      if (event.target.closest(".suggest-wiki")) return;
       event.preventDefault();
       applySuggestion(item.name);
     });
@@ -454,9 +543,17 @@ function highlightSuggestion(index) {
 
 async function requestSuggestions() {
   const termRaw = lastSearchTerm(els.search.value, els.search.selectionStart);
-  const term = termRaw.replace(/^-+/, "");
-  if (term.length < AUTOCOMPLETE_MIN || term.includes(":") || isBlockedTag(term)) {
-    hideSuggestions();
+  const { body } = splitTermPrefix(termRaw.replace(/^-?\(/, ""));
+  // Metatags: names ("ord" -> order:) and enum values ("order:sc" -> order:score).
+  const metas = metatagSuggestions(body).map((m) => ({ name: m.value, label: m.label, hint: m.hint, kind: m.kind }));
+  if (body.includes(":")) {
+    if (metas.length) renderSuggestions(metas);
+    else hideSuggestions();
+    return;
+  }
+  if (body.length < AUTOCOMPLETE_MIN || body.includes("*")) {
+    if (metas.length) renderSuggestions(metas);
+    else hideSuggestions();
     return;
   }
   if (state.suggestAbort) state.suggestAbort.abort();
@@ -464,12 +561,13 @@ async function requestSuggestions() {
   state.suggestAbort = abort;
   const seq = ++state.suggestSeq;
   try {
-    const results = await fetchAutocomplete(term, { signal: abort.signal });
+    const results = await fetchAutocomplete(body, { signal: abort.signal });
     if (seq !== state.suggestSeq) return;
-    renderSuggestions(results);
+    renderSuggestions([...metas.slice(0, 3), ...results]);
   } catch (error) {
     if (error && error.name === "AbortError") return;
-    hideSuggestions();
+    if (metas.length) renderSuggestions(metas);
+    else hideSuggestions();
   }
 }
 
@@ -548,6 +646,7 @@ function renderGrid(reset) {
 
 async function loadPage({ page, append }) {
   const built = currentQuery();
+  if (!append) updateWikiPreview();
   if (state.searchAbort) state.searchAbort.abort();
   const abort = new AbortController();
   state.searchAbort = abort;
@@ -563,7 +662,8 @@ async function loadPage({ page, append }) {
         page,
         limit: PAGE_LIMIT,
         signal: abort.signal,
-      })
+      }),
+      { query: els.search.value }
     );
     state.page = page;
     state.hasMore = posts.length >= PAGE_LIMIT && page < MAX_PAGE;
@@ -809,7 +909,7 @@ function currentPoolIndex() {
 }
 
 function setViewerPool(pool) {
-  if (!pool || nameContainsBlockedTerm(pool.name) || !formatPoolName(pool.name)) {
+  if (!pool || !formatPoolName(pool.name)) {
     state.viewerPool = null;
     if (els.viewerPoolBar) els.viewerPoolBar.hidden = true;
     if (els.viewerPoolName) {
@@ -904,7 +1004,7 @@ function loadPoolsForContext(ids, seq) {
           if (seq !== state.contextSeq) return null;
           if (pool) {
             cachePool(pool);
-            if (!nameContainsBlockedTerm(pool.name) && formatPoolName(pool.name)) {
+            if (formatPoolName(pool.name)) {
               return pool;
             }
           }
@@ -1029,7 +1129,7 @@ function activateViewerPool() {
   const id = Number(els.viewerPoolName.dataset.poolId);
   const current = state.viewerPool && Number(state.viewerPool.id) === id ? state.viewerPool : cachedPool(id);
   closeViewer();
-  if (current && !nameContainsBlockedTerm(current.name)) {
+  if (current) {
     if (state.view === "pools" && state.activePool && Number(state.activePool.id) === id) return;
     setView("pools");
     openPool(current);
@@ -1040,7 +1140,7 @@ function activateViewerPool() {
   beginLoad("Loading pool…");
   fetchPoolById(id)
     .then(function (pool) {
-      if (!pool || nameContainsBlockedTerm(pool.name)) {
+      if (!pool) {
         setStatus("That pool is not available.", "warn");
         finishLoad();
         return;
@@ -1067,40 +1167,18 @@ function renderViewerTags(post) {
     title.className = "tag-group-title";
     title.textContent = formatTagCategoryLabel(group.category);
     wrap.dataset.category = group.category;
+    const color = tagCategoryColor(group.category);
+    if (color) title.style.color = color;
     wrap.append(title);
     for (const name of group.tags) {
-      const row = document.createElement("div");
-      row.className = "tag-row";
-      const plus = document.createElement("button");
-      plus.type = "button";
-      plus.className = "tag-plus";
-      plus.textContent = "+";
-      plus.setAttribute("aria-label", "Add " + name);
-      plus.addEventListener("click", function () {
-        applyTagToSearch("add", name);
-      });
-      const label = document.createElement("button");
-      label.type = "button";
-      label.className = "tag-name";
-      label.textContent = name;
-      label.addEventListener("click", function () {
-        applyTagToSearch("replace", name);
-      });
-      const minus = document.createElement("button");
-      minus.type = "button";
-      minus.className = "tag-minus";
-      minus.textContent = "-";
-      minus.setAttribute("aria-label", "Exclude " + name);
-      minus.addEventListener("click", function () {
-        applyTagToSearch("exclude", name);
-      });
-      const count = document.createElement("span");
-      count.className = "tag-count";
-      count.dataset.tag = name;
-      const known = state.tagCounts.get(name);
-      if (known != null) count.textContent = formatCount(known);
-      row.append(plus, label, count, minus);
-      wrap.append(row);
+      rememberTagCategory(name, group.category);
+      wrap.append(
+        createTagChip(name, {
+          category: group.category,
+          rowClass: "tag-row",
+          onTap: () => applyTagToSearch("replace", name),
+        })
+      );
     }
     els.viewerTags.append(wrap);
   }
@@ -1108,25 +1186,20 @@ function renderViewerTags(post) {
 }
 
 function applyTagToSearch(mode, raw) {
-  if (isBlockedTag(raw)) return;
   const name = tagName(raw);
   if (!name) return;
   const tokens = tokenize(els.search && els.search.value);
-  let next = [];
-  if (mode === "replace") {
-    next = [name];
-  } else if (mode === "add") {
-    next = tokens.filter(function (token) {
-      return tagName(token) !== name;
-    });
-    next.push(name);
-  } else {
-    next = tokens.filter(function (token) {
-      return tagName(token) !== name;
-    });
-    next.push("-" + name);
-  }
+  const others = tokens.filter(function (token) {
+    return tokenMetatag(token) || tagName(token) !== name;
+  });
+  let next;
+  if (mode === "replace") next = [name];
+  else if (mode === "add") next = [...others, name];
+  else if (mode === "or") next = [...others, "~" + name];
+  else next = [...others, "-" + name];
   if (els.search) els.search.value = next.join(" ");
+  closeTagMenu();
+  closeWiki();
   closeViewer();
   setView("posts");
   setSub("");
@@ -1450,6 +1523,8 @@ function appendDTextNodes(parent, nodes) {
         el.href = node.href;
         el.target = "_blank";
         el.rel = "noopener noreferrer nofollow";
+        if (node.wiki) el.dataset.wiki = node.wiki;
+        if (node.search) el.dataset.search = node.search;
         break;
       case "spoiler":
         el = document.createElement("span");
@@ -1835,11 +1910,37 @@ function loadMoreComments() {
     });
 }
 
+function syncCommentsToggle() {
+  const hidden = state.commentsHidden;
+  if (els.viewerCommentsBody) els.viewerCommentsBody.hidden = hidden;
+  if (els.viewerCommentsToggle) {
+    els.viewerCommentsToggle.textContent = hidden ? "Show comments" : "Hide comments";
+    els.viewerCommentsToggle.setAttribute("aria-expanded", hidden ? "false" : "true");
+  }
+  if (els.viewerComments) els.viewerComments.classList.toggle("is-collapsed", hidden);
+}
+
+function toggleComments() {
+  state.commentsHidden = !state.commentsHidden;
+  setItem(COMMENTS_HIDDEN_KEY, state.commentsHidden ? "1" : "0");
+  syncCommentsToggle();
+  const post = currentViewerPost();
+  // Showing again loads comments if they were never fetched for this post.
+  if (!state.commentsHidden && post && state.comments.postId === post.id && state.comments.page === 0 && !state.comments.done) {
+    renderViewerComments(post);
+  }
+}
+
 function renderViewerComments(post) {
   if (!els.viewerComments) return;
   resetViewerComments(post);
+  syncCommentsToggle();
   const count = postCommentCount(post);
   els.viewerCommentsTitle.textContent = count != null ? "Comments (" + count + ")" : "Comments";
+  if (state.commentsHidden) {
+    // Collapsed: nothing is fetched until the user shows comments again.
+    return;
+  }
   if (count === 0) {
     state.comments.done = true;
     els.viewerCommentsStatus.textContent = "No comments yet.";
@@ -1891,16 +1992,18 @@ function renderViewerDetails(post) {
   list.textContent = "";
   const d = postDetails(post);
   if (d.artists.length) {
-    const frag = document.createDocumentFragment();
-    d.artists.forEach((name, index) => {
-      if (index) frag.append(document.createTextNode(", "));
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "detail-tag";
-      button.textContent = name;
-      button.addEventListener("click", () => applyTagToSearch("replace", name));
-      frag.append(button);
-    });
+    const frag = document.createElement("div");
+    frag.className = "tag-chip-list";
+    for (const name of d.artists) {
+      frag.append(
+        createTagChip(name, {
+          category: "artist",
+          rowClass: "tag-chip detail-tag",
+          showCount: false,
+          onTap: () => applyTagToSearch("replace", name),
+        })
+      );
+    }
     addDetail(list, d.artists.length > 1 ? "Artists" : "Artist", frag);
   }
   if (d.uploaderName || d.uploaderId != null) {
@@ -1958,7 +2061,10 @@ async function fetchTagCounts(names) {
   for (const batch of tagNameBatches(missing, 100)) {
     const records = await fetchTagsByNames(batch);
     for (const record of records) {
-      if (record && record.name) state.tagCounts.set(String(record.name).toLowerCase(), Number(record.post_count) || 0);
+      if (!record || !record.name) continue;
+      const key = String(record.name).toLowerCase();
+      state.tagCounts.set(key, Number(record.post_count) || 0);
+      rememberTagCategory(key, record.category);
     }
     // Names e621 did not return have no posts (or were aliased away).
     for (const name of batch) if (!state.tagCounts.has(name)) state.tagCounts.set(name, 0);
@@ -1967,7 +2073,7 @@ async function fetchTagCounts(names) {
 
 function fillTagCountNodes(root) {
   if (!root) return;
-  for (const node of root.querySelectorAll(".tag-count[data-tag]")) {
+  for (const node of root.querySelectorAll(".tag-count[data-tag]:not([data-fixed])")) {
     const count = state.tagCounts.get(node.dataset.tag);
     if (count == null) continue;
     node.textContent = formatCount(count);
@@ -2003,24 +2109,17 @@ function renderRelatedList(items, countKind) {
   els.relatedList.textContent = "";
   for (const item of items) {
     const li = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary related-tag";
-    button.dataset.tag = item.name;
-    const name = document.createElement("span");
-    name.className = "related-name";
-    name.textContent = item.name;
-    const count = document.createElement("span");
-    count.className = "tag-count";
-    count.dataset.tag = item.name;
-    if (countKind === "page") count.textContent = item.weight + "×";
-    button.append(name, count);
-    button.setAttribute("aria-label", "Add " + item.name + " to the search");
-    button.addEventListener("click", () => {
-      closeRelatedPanel();
-      applyTagToSearch("add", item.name);
+    const chip = createTagChip(item.name, {
+      category: state.tagCategories.get(item.name),
+      rowClass: "tag-chip related-tag",
+      countText: countKind === "page" ? item.weight + "×" : null,
+      onTap: () => {
+        closeRelatedPanel();
+        applyTagToSearch("add", item.name);
+      },
+      tapLabel: "Add " + item.name + " to the search",
     });
-    li.append(button);
+    li.append(chip);
     els.relatedList.append(li);
   }
 }
@@ -2042,7 +2141,9 @@ async function openRelatedPanel() {
       const records = await fetchTagsByNames(searched.slice(0, 20));
       if (seq !== state.relatedSeq) return;
       for (const record of records) {
-        if (record && record.name) state.tagCounts.set(String(record.name).toLowerCase(), Number(record.post_count) || 0);
+        if (!record || !record.name) continue;
+        state.tagCounts.set(String(record.name).toLowerCase(), Number(record.post_count) || 0);
+        rememberTagCategory(record.name, record.category);
       }
       items = mergeRelatedTags(records, { exclude, limit: 30 });
     }
@@ -2071,6 +2172,7 @@ async function openRelatedPanel() {
       await fetchTagCounts(items.map((item) => item.name));
       if (seq !== state.relatedSeq) return;
       fillTagCountNodes(els.relatedList);
+      paintTagCategories(els.relatedList);
     } catch (error) {
       /* counts are optional */
     }
@@ -2089,8 +2191,566 @@ function bindViewerExtras() {
   if (els.viewerDown) els.viewerDown.addEventListener("click", () => castVote(-1));
   if (els.viewerNotesToggle) els.viewerNotesToggle.addEventListener("click", toggleNotes);
   if (els.viewerCommentsMore) els.viewerCommentsMore.addEventListener("click", loadMoreComments);
+  if (els.viewerCommentsToggle) els.viewerCommentsToggle.addEventListener("click", toggleComments);
+  bindTagTools();
   if (els.relatedBtn) els.relatedBtn.addEventListener("click", toggleRelatedPanel);
   window.addEventListener("resize", layoutNotesLayer);
+}
+
+/* ---------- Tag chips: + name count ? -, colors, long-press menu ---------- */
+
+function rememberTagCategory(name, category) {
+  const cat = tagCategoryName(category);
+  const key = tagName(name);
+  if (cat && key) state.tagCategories.set(key, cat);
+}
+
+function applyTagColor(el, category) {
+  const cat = tagCategoryName(category);
+  if (!cat) return;
+  el.dataset.category = cat;
+  el.style.setProperty("--tag-color", tagCategoryColor(cat));
+}
+
+/** Color chips whose category was unknown when they were drawn. */
+function paintTagCategories(root) {
+  if (!root) return;
+  for (const chip of root.querySelectorAll("[data-tag]:not([data-category])")) {
+    const cat = state.tagCategories.get(chip.dataset.tag);
+    if (cat && chip.classList.contains("tag-chip")) applyTagColor(chip, cat);
+  }
+}
+
+/**
+ * Long press (touch ~500ms, or a long mouse press) and right-click call
+ * onLong. A long press swallows the click that follows, so the tap action
+ * does not also run.
+ */
+function bindLongPress(el, onLong) {
+  let timer = 0;
+  let start = null;
+  let fired = 0;
+  const clear = () => {
+    window.clearTimeout(timer);
+    timer = 0;
+    start = null;
+  };
+  const fire = (event) => {
+    clear();
+    fired = Date.now();
+    onLong(event);
+  };
+  el.addEventListener("pointerdown", (event) => {
+    if (event.button > 0) return;
+    start = { x: event.clientX, y: event.clientY };
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => fire(event), LONG_PRESS_MS);
+  });
+  el.addEventListener("pointermove", (event) => {
+    if (!start) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) clear();
+  });
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) el.addEventListener(type, clear);
+  el.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    // Android Chrome fires contextmenu for the same long press; open once.
+    if (Date.now() - fired < 800) return;
+    fire(event);
+  });
+  el.addEventListener(
+    "click",
+    (event) => {
+      if (Date.now() - fired < 800) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+}
+
+/**
+ * One tag with its tools: [+] [name] [count] [?] [-].
+ * Tapping the name runs onTap; long-press or right-click opens the tag menu.
+ */
+function createTagChip(raw, { category = "", rowClass = "tag-chip", onTap = null, tapLabel = "", showCount = true, countText = null } = {}) {
+  const name = tagName(raw);
+  const row = document.createElement("div");
+  row.className = rowClass;
+  row.dataset.tag = name;
+  applyTagColor(row, category || state.tagCategories.get(name));
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "tag-plus";
+  plus.textContent = "+";
+  plus.setAttribute("aria-label", "Add " + name);
+  plus.addEventListener("click", () => applyTagToSearch("add", name));
+
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "tag-name";
+  label.textContent = name;
+  if (tapLabel) label.setAttribute("aria-label", tapLabel);
+  label.title = "Long-press for more";
+  label.addEventListener("click", () => {
+    if (onTap) onTap();
+    else applyTagToSearch("replace", name);
+  });
+  bindLongPress(label, () => openTagMenu(name));
+
+  const parts = [plus, label];
+  if (showCount) {
+    const count = document.createElement("span");
+    count.className = "tag-count";
+    count.dataset.tag = name;
+    if (countText != null) {
+      count.textContent = countText;
+      count.dataset.fixed = "true";
+    } else {
+      const known = state.tagCounts.get(name);
+      if (known != null) count.textContent = formatCount(known);
+    }
+    parts.push(count);
+  }
+
+  const wiki = document.createElement("button");
+  wiki.type = "button";
+  wiki.className = "tag-wiki";
+  wiki.textContent = "?";
+  wiki.setAttribute("aria-label", "Wiki for " + name);
+  wiki.addEventListener("click", () => openWiki(name));
+
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.className = "tag-minus";
+  minus.textContent = "-";
+  minus.setAttribute("aria-label", "Exclude " + name);
+  minus.addEventListener("click", () => applyTagToSearch("exclude", name));
+
+  row.append(...parts, wiki, minus);
+  return row;
+}
+
+function showDialog(dialog) {
+  if (!dialog) return;
+  try {
+    if (typeof dialog.showModal === "function") {
+      if (!dialog.open) dialog.showModal();
+    } else {
+      dialog.setAttribute("open", "");
+    }
+  } catch (error) {
+    dialog.setAttribute("open", "");
+  }
+}
+
+function hideDialog(dialog) {
+  if (!dialog) return;
+  try {
+    if (dialog.open && typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  } catch (error) {
+    dialog.removeAttribute("open");
+  }
+}
+
+/* ---------- Tag menu ---------- */
+
+function syncTagMenu() {
+  const name = state.tagMenuName;
+  if (!els.tagMenu || !name) return;
+  els.tagMenuTitle.textContent = name;
+  els.tagMenuTitle.style.removeProperty("--tag-color");
+  applyTagColor(els.tagMenuTitle, state.tagCategories.get(name));
+  const listed = state.blacklist.includes(name);
+  const black = els.tagMenu.querySelector('[data-tag-action="blacklist"]');
+  if (black) black.textContent = listed ? "Remove from blacklist" : "Add to blacklist";
+}
+
+function openTagMenu(name) {
+  if (!els.tagMenu) return;
+  state.tagMenuName = tagName(name);
+  if (els.tagMenuStatus) els.tagMenuStatus.textContent = "";
+  syncTagMenu();
+  state.tagMenuGuard = true;
+  showDialog(els.tagMenu);
+}
+
+function closeTagMenu() {
+  hideDialog(els.tagMenu);
+}
+
+async function copyText(value) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (error) {
+    /* fall back below */
+  }
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  (els.tagMenu && els.tagMenu.open ? els.tagMenu : document.body).append(area);
+  area.select();
+  area.setSelectionRange(0, value.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (error) {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+function toggleBlacklistTag(name) {
+  if (state.blacklist.includes(name)) {
+    state.blacklist = state.blacklist.filter((entry) => entry !== name);
+    persistBlacklist();
+    renderBlacklist();
+    return "Removed " + name + " from your blacklist.";
+  }
+  state.blacklist.push(name);
+  persistBlacklist();
+  renderBlacklist();
+  return "Added " + name + " to your blacklist. It applies to your next search.";
+}
+
+async function runTagMenuAction(action) {
+  const name = state.tagMenuName;
+  if (!name) return;
+  const say = (text) => {
+    if (els.tagMenuStatus) els.tagMenuStatus.textContent = text;
+  };
+  if (action === "close") return closeTagMenu();
+  if (action === "copy") {
+    const ok = await copyText(name);
+    say(ok ? "Copied " + name + "." : "Could not copy. The tag is: " + name);
+    return;
+  }
+  if (action === "blacklist") {
+    say(toggleBlacklistTag(name));
+    syncTagMenu();
+    return;
+  }
+  if (action === "or") return applyTagToSearch("or", name);
+  if (action === "only") return applyTagToSearch("replace", name);
+  if (action === "wiki") {
+    closeTagMenu();
+    openWiki(name);
+  }
+}
+
+/* ---------- Wiki (preview above the grid, and the full in-app page) ---------- */
+
+function loadWiki(name) {
+  const key = tagName(name);
+  if (state.wikiCache.has(key)) return state.wikiCache.get(key);
+  const pending = fetchWikiPage(key).catch((error) => {
+    state.wikiCache.delete(key);
+    throw error;
+  });
+  state.wikiCache.set(key, pending);
+  return pending;
+}
+
+function loadRelations(name) {
+  const key = tagName(name);
+  if (state.relationCache.has(key)) return state.relationCache.get(key);
+  const pending = Promise.all([fetchTagAliases(key), fetchTagImplications(key)])
+    .then(([aliases, implications]) => tagRelations(key, aliases, implications))
+    .catch((error) => {
+      state.relationCache.delete(key);
+      throw error;
+    });
+  state.relationCache.set(key, pending);
+  return pending;
+}
+
+function hideWikiPreview() {
+  state.wikiPreviewSeq += 1;
+  state.wikiPreviewTag = "";
+  if (els.wikiPreview) els.wikiPreview.hidden = true;
+}
+
+function updateWikiPreview() {
+  if (!els.wikiPreview) return;
+  const tag = state.view === "posts" && (!state.sub || state.sub === "hot") ? singleSearchTag(els.search.value) : "";
+  if (!tag) {
+    hideWikiPreview();
+    return;
+  }
+  if (tag === state.wikiPreviewTag && !els.wikiPreview.hidden) return;
+  const seq = ++state.wikiPreviewSeq;
+  state.wikiPreviewTag = tag;
+  els.wikiPreview.hidden = true;
+  loadWiki(tag)
+    .then((page) => {
+      if (seq !== state.wikiPreviewSeq) return;
+      const body = page && !page.is_deleted ? String(page.body || "").trim() : "";
+      if (!body) {
+        els.wikiPreview.hidden = true;
+        return;
+      }
+      els.wikiPreviewTitle.textContent = "";
+      els.wikiPreviewTitle.append(
+        createTagChip(tag, { rowClass: "tag-chip wiki-preview-tag", onTap: () => openWiki(tag), tapLabel: "Open the wiki for " + tag })
+      );
+      fetchTagCounts([tag])
+        .then(() => {
+          fillTagCountNodes(els.wikiPreviewTitle);
+          paintTagCategories(els.wikiPreviewTitle);
+        })
+        .catch(() => {});
+      const excerpt = dtextExcerpt(body, { maxBlocks: 3, maxChars: 280 });
+      els.wikiPreviewBody.textContent = "";
+      appendDTextNodes(els.wikiPreviewBody, excerpt.nodes);
+      els.wikiPreviewMore.textContent = "Show more";
+      els.wikiPreview.hidden = false;
+    })
+    .catch(() => {
+      if (seq === state.wikiPreviewSeq) els.wikiPreview.hidden = true;
+    });
+}
+
+function closeWiki() {
+  state.wikiSeq += 1;
+  hideDialog(els.wikiDialog);
+}
+
+function relationGroup(label, names, { showCount = true } = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = "relation-group";
+  const title = document.createElement("p");
+  title.className = "relation-title";
+  title.textContent = label;
+  const list = document.createElement("div");
+  list.className = "tag-chip-list";
+  for (const name of names) {
+    list.append(createTagChip(name, { rowClass: "tag-chip", showCount, onTap: () => openWiki(name), tapLabel: "Open the wiki for " + name }));
+  }
+  wrap.append(title, list);
+  return wrap;
+}
+
+function renderRelations(name, rel) {
+  const box = els.wikiRelations;
+  box.textContent = "";
+  const groups = [];
+  if (rel.aliasOf) groups.push(relationGroup(name + " is an alias of", [rel.aliasOf]));
+  if (rel.aliases.length) groups.push(relationGroup("Aliased from (other names)", rel.aliases, { showCount: false }));
+  if (rel.implies.length) groups.push(relationGroup("Implies", rel.implies));
+  if (rel.impliedBy.length) groups.push(relationGroup("Implied by", rel.impliedBy));
+  if (!groups.length) {
+    const none = document.createElement("p");
+    none.className = "muted tight";
+    none.textContent = "No active aliases or implications.";
+    groups.push(none);
+  }
+  const head = document.createElement("h3");
+  head.className = "viewer-section-title";
+  head.textContent = "Aliases and implications";
+  box.append(head, ...groups);
+  box.hidden = false;
+  const names = [rel.aliasOf, ...rel.aliases, ...rel.implies, ...rel.impliedBy].filter(Boolean);
+  fetchTagCounts(names)
+    .then(() => {
+      fillTagCountNodes(box);
+      paintTagCategories(box);
+    })
+    .catch(() => {});
+}
+
+function openWiki(raw) {
+  const name = tagName(raw);
+  if (!name || !els.wikiDialog) return;
+  closeTagMenu();
+  hideSuggestions();
+  const seq = ++state.wikiSeq;
+  els.wikiTitle.textContent = name.replace(/_/g, " ");
+  els.wikiOpen.href = "https://e621.net/wiki_pages/show_or_new?title=" + encodeURIComponent(name);
+  els.wikiTag.textContent = "";
+  els.wikiTag.append(createTagChip(name, { rowClass: "tag-chip wiki-own-tag", onTap: () => applyTagToSearch("replace", name), tapLabel: "Search " + name }));
+  els.wikiStatus.textContent = "Loading the wiki…";
+  els.wikiBody.textContent = "";
+  els.wikiRelations.hidden = true;
+  els.wikiRelations.textContent = "";
+  els.wikiMentions.hidden = true;
+  els.wikiMentionsList.textContent = "";
+  showDialog(els.wikiDialog);
+  els.wikiDialog.scrollTop = 0;
+  fetchTagCounts([name])
+    .then(() => {
+      if (seq !== state.wikiSeq) return;
+      fillTagCountNodes(els.wikiTag);
+      paintTagCategories(els.wikiTag);
+      const cat = state.tagCategories.get(name);
+      if (cat) applyTagColor(els.wikiTitle, cat);
+    })
+    .catch(() => {});
+  loadWiki(name)
+    .then((page) => {
+      if (seq !== state.wikiSeq) return;
+      const body = page && !page.is_deleted ? String(page.body || "") : "";
+      if (!body.trim()) {
+        els.wikiStatus.textContent = "There is no wiki page for this tag yet.";
+        return;
+      }
+      els.wikiStatus.textContent = "";
+      const tree = parseDText(body);
+      appendDTextNodes(els.wikiBody, tree);
+      const titles = dtextWikiTitles(tree).filter((title) => title !== name && !title.includes(":")).slice(0, 60);
+      if (titles.length) {
+        for (const title of titles) {
+          els.wikiMentionsList.append(createTagChip(title, { rowClass: "tag-chip", onTap: () => openWiki(title), tapLabel: "Open the wiki for " + title }));
+        }
+        els.wikiMentions.hidden = false;
+        fetchTagCounts(titles)
+          .then(() => {
+            if (seq !== state.wikiSeq) return;
+            fillTagCountNodes(els.wikiMentionsList);
+            paintTagCategories(els.wikiMentionsList);
+          })
+          .catch(() => {});
+      }
+    })
+    .catch((error) => {
+      if (seq !== state.wikiSeq) return;
+      els.wikiStatus.textContent = "Could not load the wiki: " + ((error && error.message) || "error");
+    });
+  loadRelations(name)
+    .then((rel) => {
+      if (seq !== state.wikiSeq) return;
+      renderRelations(name, rel);
+    })
+    .catch(() => {
+      if (seq !== state.wikiSeq) return;
+      els.wikiRelations.textContent = "";
+      const note = document.createElement("p");
+      note.className = "muted tight";
+      note.textContent = "Could not load aliases and implications.";
+      els.wikiRelations.append(note);
+      els.wikiRelations.hidden = false;
+    });
+}
+
+// Inside wiki text, [[wiki]] links open the in-app wiki and {{search}} links
+// run the search here instead of leaving for e621.
+function handleDTextLink(event) {
+  const link = event.target.closest && event.target.closest("a[data-wiki], a[data-search]");
+  if (!link) return;
+  event.preventDefault();
+  if (link.dataset.wiki) openWiki(link.dataset.wiki);
+  else if (link.dataset.search) {
+    if (els.search) els.search.value = link.dataset.search;
+    closeWiki();
+    closeViewer();
+    setView("posts");
+    setSub("");
+    searchFromStart();
+  }
+}
+
+/* ---------- Search help ---------- */
+
+function renderSearchHelp() {
+  if (!els.searchHelpSyntax || els.searchHelpSyntax.childElementCount) return;
+  for (const row of SEARCH_SYNTAX_HELP) {
+    const tr = document.createElement("tr");
+    const code = document.createElement("td");
+    const c = document.createElement("code");
+    c.textContent = row.example;
+    code.append(c);
+    const text = document.createElement("td");
+    text.textContent = row.text;
+    tr.append(code, text);
+    els.searchHelpSyntax.append(tr);
+  }
+  const groups = new Map();
+  for (const meta of METATAGS) {
+    if (!groups.has(meta.group)) groups.set(meta.group, []);
+    groups.get(meta.group).push(meta);
+  }
+  for (const [group, metas] of groups) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = group;
+    const list = document.createElement("dl");
+    for (const meta of metas) {
+      const dt = document.createElement("dt");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary help-insert";
+      button.textContent = meta.example;
+      button.setAttribute("aria-label", "Add " + meta.name + ": to the search");
+      button.addEventListener("click", () => {
+        const value = els.search.value.replace(/\s+$/, "");
+        els.search.value = (value ? value + " " : "") + meta.name + ":";
+        hideDialog(els.searchHelp);
+        els.search.focus();
+        const end = els.search.value.length;
+        els.search.setSelectionRange(end, end);
+        requestSuggestions();
+      });
+      dt.append(button);
+      const dd = document.createElement("dd");
+      dd.textContent = meta.hint + (meta.values ? " (" + meta.values.slice(0, 8).join(", ") + (meta.values.length > 8 ? ", …" : "") + ")" : "");
+      list.append(dt, dd);
+    }
+    details.append(summary, list);
+    els.searchHelpMetatags.append(details);
+  }
+}
+
+function bindTagTools() {
+  if (els.tagMenu) {
+    // A fresh press inside the menu ends the guard for the long-press release.
+    els.tagMenu.addEventListener("pointerdown", () => {
+      state.tagMenuGuard = false;
+    });
+    els.tagMenu.addEventListener(
+      "click",
+      (event) => {
+        if (!state.tagMenuGuard) return;
+        state.tagMenuGuard = false;
+        // Programmatic clicks (keyboard, tests) have no pointer position.
+        if (event.detail === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      },
+      true
+    );
+    els.tagMenu.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tag-action]");
+      if (button) {
+        runTagMenuAction(button.dataset.tagAction);
+        return;
+      }
+      // Tap on the backdrop closes the menu.
+      if (event.target === els.tagMenu) closeTagMenu();
+    });
+  }
+  if (els.wikiClose) els.wikiClose.addEventListener("click", closeWiki);
+  if (els.wikiBody) els.wikiBody.addEventListener("click", handleDTextLink);
+  if (els.wikiPreviewBody) els.wikiPreviewBody.addEventListener("click", handleDTextLink);
+  if (els.wikiPreviewMore) {
+    els.wikiPreviewMore.addEventListener("click", () => {
+      if (state.wikiPreviewTag) openWiki(state.wikiPreviewTag);
+    });
+  }
+  if (els.searchHelpBtn) {
+    els.searchHelpBtn.addEventListener("click", () => {
+      hideSuggestions();
+      renderSearchHelp();
+      showDialog(els.searchHelp);
+    });
+  }
+  if (els.searchHelpClose) els.searchHelpClose.addEventListener("click", () => hideDialog(els.searchHelp));
 }
 
 const VIEWER_MAX_ZOOM = 5;
@@ -2405,6 +3065,7 @@ function updateSortVisibility() {
 
 function setView(view) {
   state.view = view;
+  if (view !== "posts") hideWikiPreview();
   if (view !== "pools") {
     state.activePool = null;
     state.poolIds = [];
@@ -2441,6 +3102,7 @@ function setView(view) {
 
 function setSub(sub) {
   state.sub = sub || "";
+  if (state.sub && state.sub !== "hot") hideWikiPreview();
   if (els.subNav) {
     for (const button of els.subNav.querySelectorAll("[data-sub]")) {
       button.setAttribute("aria-selected", button.dataset.sub === state.sub ? "true" : "false");
@@ -2521,10 +3183,6 @@ function addBlacklistTag(raw) {
   const tokens = tokenize(raw);
   if (!tokens.length) {
     setStatus("Enter a tag to blacklist.", "error");
-    return;
-  }
-  if (tokens.every((item) => isBlockedTag(item))) {
-    setStatus("That tag is already always hidden and cannot be added to your list.", "warn");
     return;
   }
   const names = normalizeBlacklist(tokens);
@@ -3282,6 +3940,7 @@ function restorePrefs() {
   const sample = getItem(SAMPLE_KEY);
   if (els.preferSample) els.preferSample.checked = sample !== "0";
   state.blacklist = normalizeBlacklist(parseStoredList(getItem(BLACKLIST_KEY) || "", true));
+  state.commentsHidden = getItem(COMMENTS_HIDDEN_KEY) === "1";
   state.saved = parseStoredList(getItem(SAVED_KEY) || "");
   const today = todayISO();
   state.popularDates = { day: today, week: today, month: today };

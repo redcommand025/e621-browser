@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261124a" />
+    <link rel="stylesheet" href="css/styles.css?v=20261125a" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -17,8 +17,8 @@
           content. You must be 18 or older to continue.
         </p>
         <p class="muted">
-          After you confirm, all ratings are shown. Some tags are always hidden
-          and cannot be turned on.
+          After you confirm, all ratings are shown. You can hide tags you
+          don't want to see with your blacklist.
         </p>
         <div class="actions">
           <button id="age-confirm" type="button">I am 18 or older</button>
@@ -64,6 +64,7 @@
               />
               <ul id="suggest" role="listbox" hidden></ul>
             </div>
+            <button type="button" id="search-help-btn" class="secondary search-help-btn" aria-haspopup="dialog" aria-controls="search-help" aria-label="Search help">?</button>
             <button type="submit">Search</button>
           </form>
         </div>
@@ -159,7 +160,7 @@
         </div>
 
         <div id="blacklist-panel" class="view-panel" hidden>
-          <p class="muted tight">Always hidden, and not removable: young, loli, shota, cub.</p>
+          <p class="muted tight">Posts with these tags are hidden from your results. Long-press any tag to add or remove it here too.</p>
           <form id="blacklist-form" class="inline-row">
             <label class="grow" for="blacklist-add">Add a tag to your blacklist
               <input id="blacklist-add" type="text" spellcheck="false" placeholder="tag_name" />
@@ -190,6 +191,13 @@
 
       <main>
         <div id="pool-list" class="pool-list" hidden></div>
+        <section id="wiki-preview" class="wiki-preview" aria-labelledby="wiki-preview-title" hidden>
+          <div class="wiki-preview-head">
+            <h2 id="wiki-preview-title" class="wiki-preview-title"></h2>
+          </div>
+          <div id="wiki-preview-body" class="wiki-preview-body dtext"></div>
+          <button type="button" id="wiki-preview-more" class="secondary wiki-more">Show more</button>
+        </section>
         <div id="grid" class="grid"></div>
         <div id="scroll-sentinel" class="sentinel" aria-hidden="true"></div>
         <div class="pager">
@@ -238,10 +246,15 @@
       <div id="viewer-alts" class="viewer-alts"></div>
       <section id="viewer-family" class="viewer-family" hidden aria-label="Post family"></section>
       <section id="viewer-comments" class="viewer-comments" aria-label="Comments">
-        <h2 class="viewer-section-title" id="viewer-comments-title">Comments</h2>
+        <div class="viewer-section-head">
+          <h2 class="viewer-section-title" id="viewer-comments-title">Comments</h2>
+          <button type="button" id="viewer-comments-toggle" class="secondary section-toggle" aria-expanded="true" aria-controls="viewer-comments-body">Hide comments</button>
+        </div>
+        <div id="viewer-comments-body">
         <div id="viewer-comments-list" class="comment-list"></div>
         <p id="viewer-comments-status" class="muted tight"></p>
         <button type="button" id="viewer-comments-more" class="secondary" hidden>Load older comments</button>
+        </div>
       </section>
       <section id="viewer-tags" class="viewer-tags" aria-label="Post tags"></section>
       <section id="viewer-details" class="viewer-details" aria-labelledby="viewer-details-title">
@@ -264,7 +277,7 @@
           Remember my account
         </label>
         <p id="auth-remember-note" class="muted tight" hidden>Storage is blocked, so your account will be forgotten when this tab closes.</p>
-        <p class="muted tight">Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled. Signing in sends your key with every request. This site does not use e621's guest blacklist, and it will not import your e621 account blacklist. young, loli, shota, and cub stay hidden.</p>
+        <p class="muted tight">Create a key on e621 under Account, then Manage API Access, and make sure API access is enabled. Signing in sends your key with every request. This site does not use e621's guest blacklist, and it will not import your e621 account blacklist. Use this site's Blacklist to hide tags.</p>
         <div class="inline-row">
           <button id="auth-save" type="button">Sign in</button>
           <button id="auth-clear" type="button" class="secondary" disabled>Sign out</button>
@@ -274,6 +287,47 @@
       </div>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261124a"></script>
+    <script type="module" src="js/app.js?v=20261125a"></script>
+    <dialog id="wiki-dialog" class="wiki-dialog" aria-labelledby="wiki-title">
+      <div class="wiki-chrome">
+        <button type="button" id="wiki-close">Close</button>
+        <a id="wiki-open" href="#" target="_blank" rel="noopener noreferrer">Open on e621</a>
+      </div>
+      <div class="wiki-content">
+        <h2 id="wiki-title" class="wiki-title"></h2>
+        <div id="wiki-tag" class="wiki-tag"></div>
+        <p id="wiki-status" class="muted tight" role="status"></p>
+        <section id="wiki-relations" class="wiki-relations" aria-label="Aliases and implications" hidden></section>
+        <div id="wiki-body" class="wiki-body dtext"></div>
+        <section id="wiki-mentions" class="wiki-mentions" aria-label="Tags in this wiki page" hidden>
+          <h3 class="viewer-section-title">Tags in this page</h3>
+          <div id="wiki-mentions-list" class="tag-chip-list"></div>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="tag-menu" class="tag-menu" aria-labelledby="tag-menu-title">
+      <p id="tag-menu-title" class="tag-menu-title"></p>
+      <div class="tag-menu-actions">
+        <button type="button" class="secondary" data-tag-action="copy">Copy tag name</button>
+        <button type="button" class="secondary" data-tag-action="blacklist">Add to blacklist</button>
+        <button type="button" class="secondary" data-tag-action="or">Add as "or" (~tag)</button>
+        <button type="button" class="secondary" data-tag-action="wiki">Open wiki</button>
+        <button type="button" class="secondary" data-tag-action="only">Search only this tag</button>
+      </div>
+      <p id="tag-menu-status" class="muted tight" role="status"></p>
+      <button type="button" class="tag-menu-close" data-tag-action="close">Close</button>
+    </dialog>
+
+    <dialog id="search-help" class="search-help" aria-labelledby="search-help-title">
+      <h2 id="search-help-title">Search help</h2>
+      <p class="muted tight">Everything e621's search accepts works here. Type a metatag name (like <code>ord</code>) for suggestions.</p>
+      <table class="help-table"><tbody id="search-help-syntax"></tbody></table>
+      <h3>Metatags</h3>
+      <div id="search-help-metatags" class="help-metatags"></div>
+      <p class="tight"><a href="https://e621.net/wiki_pages/e621:cheatsheet" target="_blank" rel="noopener noreferrer">Full cheatsheet on e621</a></p>
+      <button type="button" id="search-help-close">Close</button>
+    </dialog>
+
   </body>
 </html>

@@ -501,3 +501,41 @@ export async function fetchTagsByNames(names, { signal } = {}) {
   );
   return Array.isArray(data) ? data : [];
 }
+
+/* ---------- Wiki, aliases, and implications ---------- */
+
+/** The wiki page for a tag, or null if it has none. */
+export async function fetchWikiPage(title, { signal } = {}) {
+  const name = String(title || "").trim().toLowerCase();
+  if (!name) return null;
+  const data = await fetchJson("/wiki_pages.json", { "search[title]": name, limit: "1" }, { signal });
+  const list = Array.isArray(data) ? data : [];
+  return list.find((page) => page && String(page.title).toLowerCase() === name) || list[0] || null;
+}
+
+function relationName(name) {
+  // name_matches treats * as a wildcard; escape it so a literal tag matches.
+  return String(name || "").trim().toLowerCase().replace(/\*/g, "\\*");
+}
+
+/**
+ * Active aliases where the tag is either side. search[name_matches] covers
+ * both antecedent and consequent in one request.
+ */
+export async function fetchTagAliases(name, { signal } = {}) {
+  const data = await fetchJson(
+    "/tag_aliases.json",
+    { "search[name_matches]": relationName(name), "search[status]": "active", limit: "100" },
+    { signal }
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchTagImplications(name, { signal } = {}) {
+  const data = await fetchJson(
+    "/tag_implications.json",
+    { "search[name_matches]": relationName(name), "search[status]": "active", limit: "100" },
+    { signal }
+  );
+  return Array.isArray(data) ? data : [];
+}
