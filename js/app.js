@@ -18,19 +18,20 @@ import {
   postParentId,
   postPoolIds,
   stepPoolIds,
+  stepPoolEnd,
   sanitizeUsername,
   queryHasMetatag,
   tagName,
   tokenMetatag,
   tokenize,
   fitTagLimit,
-} from "./filter.js?v=20261125c";
+} from "./filter.js?v=20261127a";
 import {
   getItem,
   setItem,
   removeItem,
   isStoragePersistent,
-} from "./storage.js?v=20261125c";
+} from "./storage.js?v=20261127a";
 import {
   PAGE_LIMIT,
   POOL_PAGE_LIMIT,
@@ -50,6 +51,7 @@ import {
   COMMENT_PAGE_LIMIT,
   fetchPoolById,
   fetchPools,
+  fetchPoolsByIds,
   fetchPopular,
   fetchPosts,
   fetchPostsByIds,
@@ -65,16 +67,16 @@ import {
   verifyBasicAuth,
   videoSources,
   votePost,
-} from "./api.js?v=20261125c";
-import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261125c";
+} from "./api.js?v=20261127a";
+import { dtextExcerpt, dtextWikiTitles, parseDText } from "./dtext.js?v=20261127a";
 import {
   METATAGS,
   SEARCH_SYNTAX_HELP,
   metatagSuggestions,
   singleSearchTag,
   splitTermPrefix,
-} from "./search.js?v=20261125c";
-import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261125c";
+} from "./search.js?v=20261127a";
+import { tagCategoryColor, tagCategoryName } from "./tagcolors.js?v=20261127a";
 import {
   RATINGS,
   RATING_NAMES,
@@ -82,7 +84,7 @@ import {
   normalizeRatings,
   profileSearches,
   profileStats,
-} from "./account.js?v=20261125c";
+} from "./account.js?v=20261127a";
 import {
   mergeBlacklists,
   normalizeBlacklistLine,
@@ -91,7 +93,7 @@ import {
   sameBlacklist,
   serializeBlacklist,
   singleTagLines,
-} from "./blacklist.js?v=20261125c";
+} from "./blacklist.js?v=20261127a";
 import {
   activeNotes,
   aggregatePageTags,
@@ -109,7 +111,7 @@ import {
   tagNameBatches,
   tagRelations,
   voteRequestParams,
-} from "./postinfo.js?v=20261125c";
+} from "./postinfo.js?v=20261127a";
 
 const AGE_KEY = "e621-browser:age-ok";
 const SAMPLE_KEY = "e621-browser:prefer-sample";
@@ -219,10 +221,13 @@ const els = {
   viewerAlts: document.getElementById("viewer-alts"),
   viewerContextBtn: document.getElementById("viewer-context-btn"),
   viewerSearchBar: document.getElementById("viewer-search-bar"),
+  viewerPoolBars: document.getElementById("viewer-pool-bars"),
   viewerPoolBar: document.getElementById("viewer-pool-bar"),
+  viewerPoolFirst: document.getElementById("viewer-pool-first"),
   viewerPoolPrev: document.getElementById("viewer-pool-prev"),
   viewerPoolName: document.getElementById("viewer-pool-name"),
   viewerPoolNext: document.getElementById("viewer-pool-next"),
+  viewerPoolLast: document.getElementById("viewer-pool-last"),
   viewerStats: document.getElementById("viewer-stats"),
   viewerFamily: document.getElementById("viewer-family"),
   viewerTags: document.getElementById("viewer-tags"),
@@ -328,6 +333,7 @@ const state = {
   viewerSource: "search",
   viewerPost: null,
   viewerPool: null,
+  viewerPools: [],
   poolPostStatus: {},
   poolPostCache: {},
   poolNavLoading: false,
@@ -990,51 +996,169 @@ function setContextSearchLabel() {
 }
 
 function currentPoolIds() {
-  if (state.viewerPool && Array.isArray(state.viewerPool.post_ids) && state.viewerPool.post_ids.length) {
-    return state.viewerPool.post_ids;
-  }
-  if (Array.isArray(state.poolIds) && state.poolIds.length) return state.poolIds;
-  return [];
+  return poolPostIds(state.viewerPool);
 }
 
 function currentPoolIndex() {
-  const post = currentViewerPost();
+  return poolIndexOfPost(state.viewerPool, currentViewerPost());
+}
+
+function poolPostIds(pool) {
+  if (pool && Array.isArray(pool.post_ids) && pool.post_ids.length) return pool.post_ids;
+  if (pool && pool === state.viewerPool && Array.isArray(state.poolIds) && state.poolIds.length) {
+    return state.poolIds;
+  }
+  return [];
+}
+
+function poolIndexOfPost(pool, post) {
   if (!post) return -1;
   const id = Number(post.id);
-  const ids = currentPoolIds();
+  const ids = poolPostIds(pool);
   for (let i = 0; i < ids.length; i++) {
     if (Number(ids[i]) === id) return i;
   }
   return -1;
 }
 
-function setViewerPool(pool) {
-  if (!pool || !formatPoolName(pool.name)) {
+function preferredContextPool(post) {
+  const ids = postPoolIds(post);
+  if (state.viewerSource === "pools" && state.activePool && ids.indexOf(Number(state.activePool.id)) !== -1) {
+    return state.activePool;
+  }
+  return null;
+}
+
+function orderedPoolIdsForPost(post) {
+  const ids = postPoolIds(post);
+  const preferred = preferredContextPool(post);
+  if (!preferred) return ids;
+  const first = Number(preferred.id);
+  return [first].concat(ids.filter(function (id) { return id !== first; }));
+}
+
+function visibleCachedPools(ids) {
+  const pools = [];
+  for (let i = 0; i < ids.length; i++) {
+    const pool = cachedPool(ids[i]);
+    if (pool && formatPoolName(pool.name)) pools.push(pool);
+  }
+  return pools;
+}
+
+function pickViewerPool(pools) {
+  if (state.viewerPool) {
+    for (let i = 0; i < pools.length; i++) {
+      if (Number(pools[i].id) === Number(state.viewerPool.id)) return pools[i];
+    }
+  }
+  const preferred = preferredContextPool(currentViewerPost());
+  if (preferred) {
+    for (let i = 0; i < pools.length; i++) {
+      if (Number(pools[i].id) === Number(preferred.id)) return pools[i];
+    }
+  }
+  return pools[0] || null;
+}
+
+function fillPoolBar(bar, pool) {
+  const name = formatPoolName(pool.name);
+  bar.hidden = false;
+  bar.dataset.poolId = String(pool.id);
+  const nameBtn = bar.querySelector(".viewer-pool-name");
+  if (nameBtn) {
+    nameBtn.textContent = name;
+    nameBtn.dataset.poolId = String(pool.id);
+    nameBtn.title = name;
+  }
+}
+
+function extraPoolBar() {
+  const bar = els.viewerPoolBar.cloneNode(true);
+  bar.removeAttribute("id");
+  bar.hidden = false;
+  const nodes = bar.querySelectorAll("[id]");
+  for (let i = 0; i < nodes.length; i++) nodes[i].removeAttribute("id");
+  return bar;
+}
+
+function clearExtraPoolBars() {
+  const host = els.viewerPoolBars;
+  if (!host || !els.viewerPoolBar) return;
+  const bars = host.querySelectorAll(".viewer-pool-bar");
+  for (let i = 0; i < bars.length; i++) {
+    if (bars[i] !== els.viewerPoolBar) bars[i].remove();
+  }
+}
+
+function renderViewerPoolBars(pools) {
+  const list = [];
+  for (let i = 0; i < (pools || []).length; i++) {
+    if (pools[i] && formatPoolName(pools[i].name)) {
+      cachePool(pools[i]);
+      list.push(pools[i]);
+    }
+  }
+  state.viewerPools = list;
+  if (!els.viewerPoolBar) {
+    state.viewerPool = list[0] || null;
+    return;
+  }
+  if (!list.length) {
     state.viewerPool = null;
-    if (els.viewerPoolBar) els.viewerPoolBar.hidden = true;
+    els.viewerPoolBar.hidden = true;
+    els.viewerPoolBar.removeAttribute("data-pool-id");
     if (els.viewerPoolName) {
       els.viewerPoolName.textContent = "Pool";
       els.viewerPoolName.removeAttribute("data-pool-id");
     }
+    clearExtraPoolBars();
     updatePoolNavButtons();
+    return;
+  }
+  state.viewerPool = pickViewerPool(list);
+  fillPoolBar(els.viewerPoolBar, list[0]);
+  const host = els.viewerPoolBars;
+  if (!host) {
+    updatePoolNavButtons();
+    return;
+  }
+  const extras = [];
+  const current = host.querySelectorAll(".viewer-pool-bar");
+  for (let i = 0; i < current.length; i++) {
+    if (current[i] !== els.viewerPoolBar) extras.push(current[i]);
+  }
+  while (extras.length > list.length - 1) extras.pop().remove();
+  while (extras.length < list.length - 1) {
+    const bar = extraPoolBar();
+    host.append(bar);
+    extras.push(bar);
+  }
+  for (let i = 1; i < list.length; i++) fillPoolBar(extras[i - 1], list[i]);
+  updatePoolNavButtons();
+}
+
+function setViewerPool(pool) {
+  if (!pool || !formatPoolName(pool.name)) {
+    renderViewerPoolBars([]);
     return false;
   }
-  cachePool(pool);
-  state.viewerPool = pool;
-  const name = formatPoolName(pool.name);
-  if (els.viewerPoolBar) els.viewerPoolBar.hidden = false;
-  if (els.viewerPoolName) {
-    els.viewerPoolName.textContent = name;
-    els.viewerPoolName.dataset.poolId = String(pool.id);
-    els.viewerPoolName.title = name;
-  }
-  updatePoolNavButtons();
+  renderViewerPoolBars([pool]);
   return true;
+}
+
+function anyPoolBarVisible() {
+  if (state.viewerPools && state.viewerPools.length) return true;
+  if (!els.viewerPoolBar) return false;
+  if (!els.viewerPoolBar.hidden) return true;
+  const host = els.viewerPoolBars;
+  if (!host) return false;
+  return !!host.querySelector(".viewer-pool-bar:not([hidden])");
 }
 
 function readyBarsMode() {
   const searchVisible = !(els.viewerSearchBar && els.viewerSearchBar.hidden);
-  const poolVisible = !!(state.viewerPool && els.viewerPoolBar && !els.viewerPoolBar.hidden);
+  const poolVisible = anyPoolBarVisible();
   if (searchVisible && poolVisible) setBarsMode("both");
   else if (poolVisible) setBarsMode("pool");
   else setBarsMode("search");
@@ -1055,89 +1179,66 @@ function updateViewerContext(post) {
   setContextSearchLabel();
   syncSearchBarVisibility();
   const seq = (state.contextSeq = (state.contextSeq || 0) + 1);
-  const openedFrom = state.viewerSource === "pools" && (state.activePool || state.viewerPool);
-  if (openedFrom && setViewerPool(openedFrom)) {
-    readyBarsMode();
-    return;
-  }
-  const ids = postPoolIds(post);
+  const ids = orderedPoolIdsForPost(post);
   if (!ids.length) {
-    setViewerPool(null);
+    renderViewerPoolBars([]);
     readyBarsMode();
     return;
   }
-  if (state.viewerPool && ids.indexOf(Number(state.viewerPool.id)) !== -1) {
-    setViewerPool(state.viewerPool);
+  const cached = visibleCachedPools(ids);
+  if (cached.length) {
+    renderViewerPoolBars(cached);
     readyBarsMode();
-    return;
+  } else {
+    renderViewerPoolBars([]);
+    setBarsMode("pending");
   }
-  const pending = [];
-  for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    const cached = cachedPool(id);
-    if (cached) {
-      if (setViewerPool(cached)) {
-        readyBarsMode();
-        return;
-      }
-      continue;
-    }
-    pending.push(id);
-  }
-  if (!pending.length) {
-    setViewerPool(null);
-    readyBarsMode();
-    return;
-  }
-  setViewerPool(null);
-  setBarsMode("pending");
-  loadPoolsForContext(pending, seq);
+  const missing = ids.filter(function (id) { return !cachedPool(id); });
+  if (!missing.length) return;
+  loadPoolsForContext(missing, seq, ids);
 }
 
-function loadPoolsForContext(ids, seq) {
-  Promise.resolve()
-    .then(function () {
-      function next(index) {
-        if (index >= ids.length) return null;
-        if (seq !== state.contextSeq) return null;
-        return fetchPoolById(ids[index]).then(function (pool) {
-          if (seq !== state.contextSeq) return null;
-          if (pool) {
-            cachePool(pool);
-            if (formatPoolName(pool.name)) {
-              return pool;
-            }
-          }
-          return next(index + 1);
-        });
-      }
-      return next(0);
-    })
-    .then(function (pool) {
+function loadPoolsForContext(missing, seq, orderedIds) {
+  fetchPoolsByIds(missing)
+    .then(function (pools) {
       if (seq !== state.contextSeq) return;
-      if (pool) setViewerPool(pool);
-      else setViewerPool(null);
+      for (let i = 0; i < (pools || []).length; i++) cachePool(pools[i]);
+      renderViewerPoolBars(visibleCachedPools(orderedIds));
       readyBarsMode();
     })
     .catch(function (error) {
       if (error && error.name === "AbortError") return;
       console.error(error);
       if (seq === state.contextSeq) {
-        setViewerPool(null);
+        renderViewerPoolBars(visibleCachedPools(orderedIds));
         readyBarsMode();
       }
     });
 }
 
 function updatePoolNavButtons() {
-  const ids = currentPoolIds();
-  const from = currentPoolIndex();
+  const post = currentViewerPost();
   const loading = !!state.poolNavLoading;
-  const hasPool = !!state.viewerPool && !(els.viewerPoolBar && els.viewerPoolBar.hidden);
-  const disablePrev = !hasPool || loading || from < 0 || !poolDirectionOpen(ids, from, -1, state.poolPostStatus);
-  const disableNext = !hasPool || loading || from < 0 || !poolDirectionOpen(ids, from, 1, state.poolPostStatus);
-  if (els.viewerPoolPrev) els.viewerPoolPrev.disabled = disablePrev;
-  if (els.viewerPoolNext) els.viewerPoolNext.disabled = disableNext;
+  const host = els.viewerPoolBars || (els.viewerPoolBar && els.viewerPoolBar.parentElement);
+  const bars = host ? host.querySelectorAll(".viewer-pool-bar") : (els.viewerPoolBar ? [els.viewerPoolBar] : []);
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    if (bar.hidden) continue;
+    const pool = cachedPool(bar.dataset.poolId);
+    const ids = poolPostIds(pool);
+    const from = poolIndexOfPost(pool, post);
+    const has = !!pool && ids.length > 0 && from >= 0;
+    const disablePrev = !has || loading || !poolDirectionOpen(ids, from, -1, state.poolPostStatus);
+    const disableNext = !has || loading || !poolDirectionOpen(ids, from, 1, state.poolPostStatus);
+    const first = bar.querySelector(".viewer-pool-first");
+    const prev = bar.querySelector(".viewer-pool-prev");
+    const next = bar.querySelector(".viewer-pool-next");
+    const last = bar.querySelector(".viewer-pool-last");
+    if (first) first.disabled = disablePrev;
+    if (prev) prev.disabled = disablePrev;
+    if (next) next.disabled = disableNext;
+    if (last) last.disabled = disableNext;
+  }
 }
 
 function showViewerPost(post) {
@@ -1151,16 +1252,39 @@ function showViewerPost(post) {
 }
 
 function stepPool(delta) {
-  if (state.poolNavLoading) return Promise.resolve();
-  if (!state.viewerPool) return Promise.resolve();
-  const ids = currentPoolIds();
-  const from = currentPoolIndex();
-  const dir = delta < 0 ? -1 : 1;
-  return walkPool(ids, from, dir, {});
+  return stepPoolFor(state.viewerPool, delta < 0 ? "prev" : "next");
 }
 
-function walkPool(ids, from, dir, attempted) {
-  const stepped = stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
+function stepPoolFor(pool, action) {
+  if (state.poolNavLoading) return Promise.resolve();
+  if (!pool) return Promise.resolve();
+  state.viewerPool = pool;
+  const ids = poolPostIds(pool);
+  if (!ids.length) return Promise.resolve();
+  const from = poolIndexOfPost(pool, currentViewerPost());
+  let dir;
+  let start;
+  if (action === "first") {
+    dir = 1;
+    start = -1;
+  } else if (action === "last") {
+    dir = -1;
+    start = ids.length;
+  } else if (action === "prev") {
+    dir = -1;
+    start = from;
+  } else {
+    dir = 1;
+    start = from;
+  }
+  const toEnd = action === "first" || action === "last";
+  return walkPool(ids, start, dir, {}, toEnd);
+}
+
+function walkPool(ids, from, dir, attempted, toEnd) {
+  const stepped = toEnd
+    ? stepPoolEnd(ids, dir < 0, state.poolPostStatus, 8)
+    : stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
   if (stepped.id != null) {
     const cached = state.poolPostCache && state.poolPostCache[String(stepped.id)];
     if (cached) {
@@ -1197,14 +1321,16 @@ function walkPool(ids, from, dir, attempted) {
       for (let i = 0; i < need.length; i++) {
         if (!allowedIds[String(need[i])]) markPoolPostStatus(need[i], "blocked");
       }
-      const again = stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
+      const again = toEnd
+        ? stepPoolEnd(ids, dir < 0, state.poolPostStatus, 8)
+        : stepPoolIds(ids, from, dir, state.poolPostStatus, 8);
       if (again.id != null && state.poolPostCache && state.poolPostCache[String(again.id)]) {
         showViewerPost(state.poolPostCache[String(again.id)]);
         return;
       }
       if (again.need && again.need.length) {
         state.poolNavLoading = false;
-        return walkPool(ids, from, dir, seen);
+        return walkPool(ids, from, dir, seen, toEnd);
       }
     })
     .catch(function (error) {
@@ -1224,10 +1350,20 @@ function activateViewerContext() {
   closeViewer();
 }
 
-function activateViewerPool() {
-  if (!els.viewerPoolName) return;
-  const id = Number(els.viewerPoolName.dataset.poolId);
-  const current = state.viewerPool && Number(state.viewerPool.id) === id ? state.viewerPool : cachedPool(id);
+function activateViewerPool(poolOrId) {
+  let current = null;
+  let id = null;
+  if (poolOrId && typeof poolOrId === "object") {
+    current = poolOrId;
+    id = Number(poolOrId.id);
+  } else if (poolOrId != null && poolOrId !== "") {
+    id = Number(poolOrId);
+    current = cachedPool(id);
+  } else {
+    id = Number(els.viewerPoolName && els.viewerPoolName.dataset.poolId);
+    current = (state.viewerPool && Number(state.viewerPool.id) === id) ? state.viewerPool : cachedPool(id);
+  }
+  if (!current && state.viewerPool && Number(state.viewerPool.id) === id) current = state.viewerPool;
   closeViewer();
   if (current) {
     if (state.view === "pools" && state.activePool && Number(state.activePool.id) === id) return;
@@ -1254,6 +1390,28 @@ function activateViewerPool() {
       setStatus((error && error.message) || "Could not open that pool.", "error", { retry: true });
       finishLoad();
     });
+}
+
+function bindPoolBarClicks() {
+  const host = els.viewerPoolBars || (els.viewerPoolBar && els.viewerPoolBar.parentElement);
+  if (!host || host.dataset.poolBarsBound) return;
+  host.dataset.poolBarsBound = "1";
+  host.addEventListener("click", function (event) {
+    const button = event.target.closest("button");
+    if (!button || !host.contains(button)) return;
+    const bar = button.closest(".viewer-pool-bar");
+    if (!bar) return;
+    const pool = cachedPool(bar.dataset.poolId);
+    if (button.classList.contains("viewer-pool-name")) {
+      activateViewerPool(pool || bar.dataset.poolId);
+      return;
+    }
+    if (!pool) return;
+    if (button.classList.contains("viewer-pool-first")) stepPoolFor(pool, "first");
+    else if (button.classList.contains("viewer-pool-prev")) stepPoolFor(pool, "prev");
+    else if (button.classList.contains("viewer-pool-next")) stepPoolFor(pool, "next");
+    else if (button.classList.contains("viewer-pool-last")) stepPoolFor(pool, "last");
+  });
 }
 
 function renderViewerTags(post) {
@@ -5145,9 +5303,7 @@ function bindEvents() {
   if (els.viewerContextBtn) {
     els.viewerContextBtn.addEventListener("click", activateViewerContext);
   }
-  if (els.viewerPoolPrev) els.viewerPoolPrev.addEventListener("click", function () { stepPool(-1); });
-  if (els.viewerPoolNext) els.viewerPoolNext.addEventListener("click", function () { stepPool(1); });
-  if (els.viewerPoolName) els.viewerPoolName.addEventListener("click", activateViewerPool);
+  bindPoolBarClicks();
   els.viewerQuality.addEventListener("click", () => {
     els.preferSample.checked = !els.preferSample.checked;
     els.preferSample.dispatchEvent(new Event("change"));

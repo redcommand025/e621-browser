@@ -269,19 +269,33 @@ export async function fetchPools({
   return Array.isArray(data) ? data : [];
 }
 
+export async function fetchPoolsByIds(ids, { signal } = {}) {
+  const list = [];
+  const seen = new Set();
+  for (const value of ids || []) {
+    const id = Number(value);
+    if (!Number.isFinite(id) || seen.has(id)) continue;
+    seen.add(id);
+    list.push(id);
+  }
+  if (!list.length) return [];
+  const data = await fetchJson(
+    "/pools.json",
+    { "search[id]": list.join(","), limit: String(list.length) },
+    { signal }
+  );
+  const byId = new Map();
+  for (const pool of Array.isArray(data) ? data : []) {
+    if (pool && pool.id != null) byId.set(Number(pool.id), pool);
+  }
+  return list.map((id) => byId.get(id)).filter(Boolean);
+}
+
 export async function fetchPoolById(id, { signal } = {}) {
   const poolId = Number(id);
   if (!Number.isFinite(poolId)) return null;
-  const data = await fetchJson(
-    "/pools.json",
-    { "search[id]": String(poolId), limit: "1" },
-    { signal }
-  );
-  const list = Array.isArray(data) ? data : [];
-  for (const pool of list) {
-    if (pool && Number(pool.id) === poolId) return pool;
-  }
-  return list[0] || null;
+  const found = await fetchPoolsByIds([poolId], { signal });
+  return found[0] || null;
 }
 
 export async function fetchPopular({ scale = "day", date = "", signal } = {}) {

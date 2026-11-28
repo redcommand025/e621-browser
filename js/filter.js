@@ -394,6 +394,31 @@ export function stepPoolIds(ids, fromIndex, direction, statusMap, batchSize) {
   return { index: -1, id: null, need: need };
 }
 
+// First/Last: scan from the start or the end. Unlike stepPoolIds, a cached
+// post in the middle does not win over unknown posts closer to that end.
+export function stepPoolEnd(ids, towardLast, statusMap, batchSize) {
+  const list = Array.isArray(ids) ? ids : [];
+  const last = !!towardLast;
+  const step = last ? -1 : 1;
+  const size = Math.max(1, Number(batchSize) || 8);
+  const need = [];
+  for (let i = last ? list.length - 1 : 0; i >= 0 && i < list.length; i += step) {
+    const id = Number(list[i]);
+    if (!Number.isFinite(id)) continue;
+    const status = poolIdStatus(statusMap, id);
+    if (status === "ok") {
+      // An already-cached post further inward must not hide unknown posts
+      // closer to this end (Last from the first post used to no-op).
+      if (need.length) break;
+      return { index: i, id: id, need: [] };
+    }
+    if (status === "blocked") continue;
+    need.push(id);
+    if (need.length >= size) break;
+  }
+  return { index: -1, id: null, need: need };
+}
+
 function numericValue(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;

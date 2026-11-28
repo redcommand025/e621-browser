@@ -1092,6 +1092,10 @@ try {
         name: document.getElementById("viewer-pool-name").textContent.trim(),
         prevDisabled: document.getElementById("viewer-pool-prev").disabled,
         nextDisabled: document.getElementById("viewer-pool-next").disabled,
+        firstDisabled: document.getElementById("viewer-pool-first").disabled,
+        lastDisabled: document.getElementById("viewer-pool-last").disabled,
+        firstLabel: document.getElementById("viewer-pool-first").textContent.replace(/\s+/g, ""),
+        lastLabel: document.getElementById("viewer-pool-last").textContent.replace(/\s+/g, ""),
         firstHref: document.getElementById("viewer-open").getAttribute("href") || "",
         title: document.getElementById("viewer-brand-home") && document.getElementById("viewer-brand-home").textContent.trim(),
       }));
@@ -1099,6 +1103,10 @@ try {
       assert.equal(bars.poolHidden, false);
       assert.equal(bars.name, poolTitle);
       assert.equal(bars.prevDisabled, true);
+      assert.equal(bars.firstDisabled, true);
+      assert.equal(bars.firstLabel, "<<First");
+      assert.equal(bars.lastLabel, "Last>>");
+      assert.equal(bars.lastDisabled, bars.nextDisabled);
       assert.equal(bars.title, "e621-red");
       if (!bars.nextDisabled) {
         await page.click("#viewer-pool-next");
@@ -1114,11 +1122,13 @@ try {
         const after = await page.evaluate(() => ({
           href: document.getElementById("viewer-open").getAttribute("href") || "",
           prevDisabled: document.getElementById("viewer-pool-prev").disabled,
+          firstDisabled: document.getElementById("viewer-pool-first").disabled,
           searchHidden: document.getElementById("viewer-search-bar").hidden,
           name: document.getElementById("viewer-pool-name").textContent.trim(),
         }));
         assert.notEqual(after.href, bars.firstHref);
         assert.equal(after.prevDisabled, false);
+        assert.equal(after.firstDisabled, false);
         assert.equal(after.searchHidden, true);
         assert.equal(after.name, poolTitle);
       }
