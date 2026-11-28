@@ -5,7 +5,7 @@
   "scripts": {
     "test": "node --test tests/filter.test.js tests/api.test.js tests/dtext.test.js tests/postinfo.test.js tests/search.test.js tests/account.test.js tests/blacklist.test.js",
     "test:browser": "node tests/browser-test.mjs",
-    "test:viewer": "node tests/viewer-extras-test.mjs && node tests/grid-memory-test.mjs"
+    "test:viewer": "node tests/viewer-extras-test.mjs && node tests/grid-memory-test.mjs && node tests/multi-pool-bars-test.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "^24.31.0"

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyClientFilters, buildSearchQuery, fitTagLimit, MAX_SEARCH_TAGS, queryHasMetatag, tagName, tokenMetatag, tokenize } from "../js/filter.js";
+import { applyClientFilters, buildSearchQuery, fitTagLimit, MAX_SEARCH_TAGS, queryHasMetatag, stepPoolEnd, stepPoolIds, tagName, tokenMetatag, tokenize } from "../js/filter.js";
 import * as filter from "../js/filter.js";
 
 test("the old hard-blocked tag list is gone", () => {
@@ -90,4 +90,22 @@ test("fitTagLimit leaves room for an id: lookup and keeps rating tags", () => {
   assert.equal(fitted.length, MAX_SEARCH_TAGS - 1);
   assert.ok(fitted.includes("-rating:e"));
   assert.equal(fitTagLimit("-a rating:s", 1), "-a rating:s");
+});
+
+test("stepPoolEnd Last does not stop at a cached post in the middle", () => {
+  const ids = [101, 102, 103, 104];
+  const status = { 101: "ok" };
+  const firstScan = stepPoolEnd(ids, true, status, 8);
+  assert.deepEqual(firstScan.need, [104, 103, 102]);
+  assert.equal(firstScan.id, null);
+  const after = stepPoolEnd(ids, true, { 101: "ok", 104: "ok", 103: "ok", 102: "ok" }, 8);
+  assert.equal(after.id, 104);
+  const skipped = stepPoolEnd(ids, true, { 101: "ok", 104: "blocked", 103: "ok" }, 8);
+  assert.equal(skipped.id, 103);
+});
+
+test("stepPoolEnd First skips blocked posts at the start", () => {
+  const ids = [301, 104, 305];
+  assert.deepEqual(stepPoolEnd(ids, false, { 301: "blocked" }, 8).need, [104, 305]);
+  assert.equal(stepPoolEnd(ids, false, { 301: "blocked", 104: "ok" }, 8).id, 104);
 });

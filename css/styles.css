@@ -900,12 +900,46 @@ button.viewer-brand:focus-visible {
 }
 
 #viewer-context-btn,
-#viewer-pool-name {
+#viewer-pool-name,
+.viewer-pool-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.85rem;
+}
+
+/* One bar per pool the post belongs to, with First/Prev/name/Next/Last. */
+#viewer-pool-bars {
+  background: #161616;
+  max-height: 30dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.viewer-pool-bar {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  gap: 4px;
+  align-items: stretch;
+  padding: 0 8px 4px;
+  background: #161616;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.viewer-pool-bar button {
+  min-height: 32px;
+  padding: 3px 6px;
+  width: auto;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.viewer-pool-bar .viewer-pool-name {
+  font-size: 0.85rem;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .viewer-stage {

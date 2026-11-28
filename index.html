@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>e621-red</title>
-    <link rel="stylesheet" href="css/styles.css?v=20261125c" />
+    <link rel="stylesheet" href="css/styles.css?v=20261127a" />
   </head>
   <body>
     <section id="age-gate" class="overlay-screen" aria-labelledby="gate-title">
@@ -259,10 +259,14 @@
           <button id="viewer-context-btn" type="button">Search: (none)</button>
           <button id="viewer-next" type="button">Next&gt;</button>
         </div>
-        <div id="viewer-pool-bar" class="viewer-context" hidden>
-          <button id="viewer-pool-prev" type="button">&lt;Prev</button>
-          <button id="viewer-pool-name" type="button">Pool</button>
-          <button id="viewer-pool-next" type="button">Next&gt;</button>
+        <div id="viewer-pool-bars">
+          <div id="viewer-pool-bar" class="viewer-context viewer-pool-bar" hidden>
+            <button id="viewer-pool-first" class="viewer-pool-first" type="button" aria-label="First post in pool">&lt;&lt;First</button>
+            <button id="viewer-pool-prev" class="viewer-pool-prev" type="button">&lt;Prev</button>
+            <button id="viewer-pool-name" class="viewer-pool-name" type="button">Pool</button>
+            <button id="viewer-pool-next" class="viewer-pool-next" type="button">Next&gt;</button>
+            <button id="viewer-pool-last" class="viewer-pool-last" type="button" aria-label="Last post in pool">Last&gt;&gt;</button>
+          </div>
         </div>
       </div>
       <div id="viewer-stage" class="viewer-stage"></div>
@@ -338,7 +342,7 @@
       </div>
     </dialog>
 
-    <script type="module" src="js/app.js?v=20261125c"></script>
+    <script type="module" src="js/app.js?v=20261127a"></script>
     <dialog id="wiki-dialog" class="wiki-dialog" aria-labelledby="wiki-title">
       <div class="wiki-chrome">
         <button type="button" id="wiki-close">Close</button>
